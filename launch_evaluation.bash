@@ -113,6 +113,8 @@ do
   PY_PID="$!"
 
   python3 run_competition.py $run_competition_args --des_vel 5.0 --model_type "ViTLSTM" --model_path ../../models/ViTLSTM_model.pth &
+  # python3 run_competition.py $run_competition_args --des_vel 5.0 --model_type "ViTLSTM" --model_path ../../training/logs/d07_05_t01_18/model_000099.pth &
+
   COMP_PID="$!"
 
   cd -

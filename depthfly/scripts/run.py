@@ -18,7 +18,7 @@ import sys, os
 import time
 import torch
 
-DEPTHFLY_PATH='/home/anish/vitfly_ws/src/vitfly/depthfly/'
+DEPTHFLY_PATH='/home/liang/Projects/vitfly_ws/src/vitfly/depthfly/'
 
 sys.path.append(DEPTHFLY_PATH+'../models')
 from model import *
@@ -35,7 +35,7 @@ class DepthInferenceNode:
 
         self.desired_velocity = 4.0
         self.model_type = 'ViTLSTM'
-        self.model_path = '/home/anish/vitfly_ws/src/vitfly/models/ViTLSTM_model.pth'
+        self.model_path = '/home/liang/Projects/vitfly_ws/src/vitfly/models/ViTLSTM_model.pth'
 
         # define our model
         if self.model_path is not None:

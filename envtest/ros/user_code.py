@@ -64,6 +64,9 @@ def compute_command_vision_based(state, orig_img, prev_img, desiredVel, trained_
     command.yawrate = 0.0
     command.mode = 2
     
+    # Get model device
+    model_device = next(trained_model.parameters()).device
+    
     ###############
     ## Load data ##
     ###############
@@ -73,7 +76,7 @@ def compute_command_vision_based(state, orig_img, prev_img, desiredVel, trained_
     h, w = (60, 90)
     img = cv2.resize(orig_img, (w, h))
     img2 = orig_img.copy() # used for generating debugimg
-    img = ToTensor()(np.array(img))
+    img = ToTensor()(np.array(img)).to(model_device)
 
     if 'LSTMNet' in trained_model.__class__.__name__:
         if trained_model.__class__.__name__ == 'LSTMNet':
@@ -88,17 +91,17 @@ def compute_command_vision_based(state, orig_img, prev_img, desiredVel, trained_
         else:
             raise Exception ("Incorrect Model specified!!")
         if state.pos[0] < 0.5 or hidden_state is None: 
-            hidden_state = (torch.zeros(trained_model.lstm.num_layers, trained_model.lstm.hidden_size).float(), torch.zeros(trained_model.lstm.num_layers, trained_model.lstm.hidden_size).float())
+            hidden_state = (torch.zeros(trained_model.lstm.num_layers, trained_model.lstm.hidden_size).float().to(model_device), torch.zeros(trained_model.lstm.num_layers, trained_model.lstm.hidden_size).float().to(model_device))
         with torch.no_grad():
-            x, hidden_state = trained_model([img.view(1, 1, h, w), torch.tensor(desiredVel).view(1, 1).float(), torch.tensor(q).view(1,-1).float() ,hidden_state])
+            x, hidden_state = trained_model([img.view(1, 1, h, w), torch.tensor(desiredVel).view(1, 1).float().to(model_device), torch.tensor(q).view(1,-1).float().to(model_device) ,hidden_state])
 
     else:
 
         with torch.no_grad():
-            x, hidden_state = trained_model([img.view(1, 1, h, w), torch.tensor(desiredVel).view(1, 1).float(), torch.tensor(q).view(1,-1).float()])
+            x, hidden_state = trained_model([img.view(1, 1, h, w), torch.tensor(desiredVel).view(1, 1).float().to(model_device), torch.tensor(q).view(1,-1).float().to(model_device)])
 
 
-    x = x.squeeze().detach().numpy()
+    x = x.cpu().squeeze().detach().numpy()
     x[0] = np.clip(x[0], -1, 1)
     x = x/np.linalg.norm(x)
     command.velocity = x*desiredVel

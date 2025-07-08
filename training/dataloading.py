@@ -84,23 +84,36 @@ def dataloader(data_dir, val_split=0., short=0, seed=None, train_val_dirs=None):
             traj_meta = traj_meta[:,:-1]
             
 
-        # read png files and scale them by 255.0 to recover normalized (0, 1) range
+        # 读取所有图像的时间戳
+        img_timestamps = [float(os.path.basename(f)[:-4]) for f in depth_im_files]
+        state_timestamps = traj_meta[:, 1]  # 假设第2列是时间戳
+
+        # 找到重叠区间
+        start_time = max(img_timestamps[0], state_timestamps[0])
+        end_time = min(img_timestamps[-1], state_timestamps[-1])
+
+        # 剪裁到重叠区间
+        img_indices = [i for i, t in enumerate(img_timestamps) if start_time <= t <= end_time]
+        state_indices = [i for i, t in enumerate(state_timestamps) if start_time <= t <= end_time]
+
+        # 只保留重叠区间的图像和状态
+        img_timestamps = [img_timestamps[i] for i in img_indices]
+        depth_im_files = [depth_im_files[i] for i in img_indices]
+        traj_meta = traj_meta[state_indices, :]
+
+        # 再次检查数量是否一致
+        min_len = min(len(depth_im_files), traj_meta.shape[0])
+        depth_im_files = depth_im_files[:min_len]
+        traj_meta = traj_meta[:min_len, :]
+
+        if min_len == 0:
+            print(f'[DATALOADER] No matched images and states in {os.path.basename(traj_folder)}, skipping')
+            continue
+
+        # 读取图像
         traj_ims = np.asarray([cv2.imread(im_file, cv2.IMREAD_GRAYSCALE) for im_file in depth_im_files], dtype=np.float32) / 255.0
 
-        # check for mismatch in number of images and telemetry entries
-        if traj_ims.shape[0] != traj_meta.shape[0]:
-            # usually the last image may not have a corresponding line of telemetry, so check specifically for that case
-            last_im_timestamp = os.path.basename(depth_im_files[-1])[:-4]
-            if float(last_im_timestamp) > traj_meta[-1, 1]:
-                traj_ims = traj_ims[:-1]
-                print(f'[DATALOADER] Extra image found at end of data, cutting it from {os.path.basename(traj_folder)}')
-            if traj_ims.shape[0] != traj_meta.shape[0]:
-                print(f'[DATALOADER] Number of images and telemetry still do not match in {os.path.basename(traj_folder)}, skipping')
-                skippedFolders += 1
-                skippedImages += int(len(traj_meta[:,0]))
-                continue
         temp = [cv2.resize(img, (cropWidth, cropHeight)) for img in traj_ims]
-
         traj_ims = np.array(temp)
         for ii in range(traj_meta.shape[0]):
             desired_vels.append(traj_meta[ii, 2])
@@ -127,32 +140,25 @@ def dataloader(data_dir, val_split=0., short=0, seed=None, train_val_dirs=None):
 
     #Col: mean, std
     #row: ct. brx/y/z
-    stats_ctbr = np.zeros((4, 2))
-    stats_ctbr[0, :] = np.mean(traj_meta_full[:, 16]), np.std(traj_meta_full[:, 16])
-    stats_ctbr[1, :] = np.mean(traj_meta_full[:, 17]), np.std(traj_meta_full[:, 17])
-    stats_ctbr[2, :] = np.mean(traj_meta_full[:, 18]), np.std(traj_meta_full[:, 18])
-    stats_ctbr[3, :] = np.mean(traj_meta_full[:, 19]), np.std(traj_meta_full[:, 19])
+    for i in range(4):
+        mean = np.mean(traj_meta_full[:, 16 + i])
+        std = np.std(traj_meta_full[:, 16 + i])
+        if std == 0:
+            traj_meta_full[:, 16 + i] = 0
+        else:
+            traj_meta_full[:, 16 + i] = (traj_meta_full[:, 16 + i] - mean) / (2 * std)
 
-    traj_meta_full[:, 16] = (traj_meta_full[:, 16] - stats_ctbr[0, 0]) / (2 * stats_ctbr[0, 1])
-    traj_meta_full[:, 17] = (traj_meta_full[:, 17] - stats_ctbr[1, 0]) / (2 * stats_ctbr[1, 1])
-    traj_meta_full[:, 18] = (traj_meta_full[:, 18] - stats_ctbr[2, 0]) / (2 * stats_ctbr[2, 1])
-    traj_meta_full[:, 19] = (traj_meta_full[:, 19] - stats_ctbr[3, 0]) / (2 * stats_ctbr[3, 1])
-
-    
     curr_ctbr = traj_meta_full[:, 16:20]
 
     #Col: mean, std
     #row: ct. brx/y/z
-    stats_ctbr = np.zeros((4, 2))
-    stats_ctbr[0, :] = np.mean(traj_meta[:, 16]), np.std(traj_meta[:, 16])
-    stats_ctbr[1, :] = np.mean(traj_meta[:, 17]), np.std(traj_meta[:, 17])
-    stats_ctbr[2, :] = np.mean(traj_meta[:, 18]), np.std(traj_meta[:, 18])
-    stats_ctbr[3, :] = np.mean(traj_meta[:, 19]), np.std(traj_meta[:, 19])
-
-    traj_meta[:, 16] = (traj_meta[:, 16] - stats_ctbr[0, 0]) / (2 * stats_ctbr[0, 1])
-    traj_meta[:, 17] = (traj_meta[:, 17] - stats_ctbr[1, 0]) / (2 * stats_ctbr[1, 1])
-    traj_meta[:, 18] = (traj_meta[:, 18] - stats_ctbr[2, 0]) / (2 * stats_ctbr[2, 1])
-    traj_meta[:, 19] = (traj_meta[:, 19] - stats_ctbr[3, 0]) / (2 * stats_ctbr[3, 1])
+    for i in range(4):
+        mean = np.mean(traj_meta[:, 16 + i])
+        std = np.std(traj_meta[:, 16 + i])
+        if std == 0:
+            traj_meta[:, 16 + i] = 0
+        else:
+            traj_meta[:, 16 + i] = (traj_meta[:, 16 + i] - mean) / (2 * std)
 
     # make train-val split (relies on earlier shuffle of traj_folders to randomize selection)
     num_val_trajs = int(val_split * len(traj_lengths))

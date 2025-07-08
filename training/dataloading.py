@@ -47,11 +47,22 @@ def dataloader(data_dir, val_split=0., short=0, seed=None, train_val_dirs=None):
     for i, traj_folder in enumerate(traj_folders):
         if len(traj_folders)//10 > 0 and i % (len(traj_folders)//10) == 0:
             print(f'[DATALOADER] Loading folder {os.path.basename(traj_folder)}, folder # {i+1}/{len(traj_folders)}, time elapsed {time.time()-start_dataloading:.2f}s')
+        # 1. 先查找轨迹文件夹下的png文件
         im_files = sorted(glob.glob(opj(traj_folder, '*.png')))
+        if len(im_files) > 0:
+            # 兼容原vitfly方案，只读取不带_rgb的png
+            depth_im_files = [f for f in im_files if '_rgb' not in f]
+        else:
+            # 2. 如果没有png文件，查找depth子文件夹
+            depth_dir = opj(traj_folder, 'depth')
+            if os.path.isdir(depth_dir):
+                depth_im_files = sorted(glob.glob(opj(depth_dir, '*.png')))
+            else:
+                print(f'[DATALOADER] No images in {os.path.basename(traj_folder)}, skipping')
+                continue
 
-        # check for empty folder
-        if len(im_files) == 0:
-            print(f'[DATALOADER] No images in {os.path.basename(traj_folder)}, skipping')
+        if len(depth_im_files) == 0:
+            print(f'[DATALOADER] No depth images found in {os.path.basename(traj_folder)}, skipping')
             continue
 
         csv_file = 'data.csv'
@@ -74,14 +85,12 @@ def dataloader(data_dir, val_split=0., short=0, seed=None, train_val_dirs=None):
             
 
         # read png files and scale them by 255.0 to recover normalized (0, 1) range
-        # for npy files, manually normalize them by a set value (0.09 for "old" dataset)
-        traj_ims = np.asarray([cv2.imread(im_file, cv2.IMREAD_GRAYSCALE) for im_file in im_files], dtype=np.float32) / 255.0
+        traj_ims = np.asarray([cv2.imread(im_file, cv2.IMREAD_GRAYSCALE) for im_file in depth_im_files], dtype=np.float32) / 255.0
 
         # check for mismatch in number of images and telemetry entries
         if traj_ims.shape[0] != traj_meta.shape[0]:
-
             # usually the last image may not have a corresponding line of telemetry, so check specifically for that case
-            last_im_timestamp = os.path.basename(im_files[-1])[:-4]
+            last_im_timestamp = os.path.basename(depth_im_files[-1])[:-4]
             if float(last_im_timestamp) > traj_meta[-1, 1]:
                 traj_ims = traj_ims[:-1]
                 print(f'[DATALOADER] Extra image found at end of data, cutting it from {os.path.basename(traj_folder)}')

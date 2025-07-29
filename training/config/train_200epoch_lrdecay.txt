@@ -14,7 +14,7 @@ load_checkpoint = False
 checkpoint_path = ''
 
 lr = 1e-4
-N_eps = 100
+N_eps = 200
 lr_warmup_epochs = 5
 lr_decay = True
 save_model_freq = 25

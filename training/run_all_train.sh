@@ -7,6 +7,7 @@ config_dir="training/config"
 configs=(
     "train_lrdecay.txt"
     "train_200epoch.txt"
+    "train_200epoch_lrdecay.txt"
 )
 
 # 依次训练

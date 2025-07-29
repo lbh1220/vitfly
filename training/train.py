@@ -155,7 +155,11 @@ class TRAINER:
 
     def dataloader(self, val_split, short=0, seed=None, train_val_dirs=None):
         self.mylogger(f'[DATALOADER] Loading from {self.dataset_dir}')
-        train_data, val_data, is_png, (self.train_dirs, self.val_dirs) = dataloader(opj(self.basedir, self.dataset_dir), val_split=val_split, short=short, seed=seed, train_val_dirs=train_val_dirs)
+        train_data, val_data, is_png, (self.train_dirs, self.val_dirs) = dataloader(opj(self.basedir, self.dataset_dir), 
+                                                                                    val_split=val_split, 
+                                                                                    short=short, 
+                                                                                    seed=seed, 
+                                                                                    train_val_dirs=train_val_dirs)
         self.train_meta, self.train_ims, self.train_trajlength, self.train_desvel, self.train_currquat, self.train_currctbr = train_data
         self.val_meta, self.val_ims, self.val_trajlength, self.val_desvel, self.val_currquat, self.val_currctbr = val_data
         self.mylogger(f'[DATALOADER] Dataloading done | train images {self.train_ims.shape}, val images {self.val_ims.shape}')

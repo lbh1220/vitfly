@@ -54,7 +54,7 @@ def dataloader(data_dir, val_split=0., short=0, seed=None, train_val_dirs=None):
             depth_im_files = [f for f in im_files if '_rgb' not in f]
         else:
             # 2. 如果没有png文件，查找depth子文件夹
-            depth_dir = opj(traj_folder, 'depth')
+            depth_dir = opj(traj_folder, 'CAM_FRONT_DEPTH')
             if os.path.isdir(depth_dir):
                 depth_im_files = sorted(glob.glob(opj(depth_dir, '*.png')))
             else:
@@ -69,7 +69,8 @@ def dataloader(data_dir, val_split=0., short=0, seed=None, train_val_dirs=None):
             print(f'[DATALOADER] No depth images found in {os.path.basename(traj_folder)}, skipping')
             continue
 
-        csv_file = 'data.csv'
+        # csv_file = 'data.csv'
+        csv_file = 'data_vitfly.csv'
         # float64 is required to read ros timestamps without rounding
         # NOTE not sure if float64 will break training (torch dtypes)
         traj_meta = np.genfromtxt(opj(traj_folder, csv_file), delimiter=',', dtype=np.float64)[1:]

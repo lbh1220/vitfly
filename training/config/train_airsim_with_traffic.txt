@@ -1,8 +1,8 @@
 # Configuration for AirSim dataset training without traffic data
 --basedir=/home/liang/Projects/vitfly_ws/src/vitfly
 --logdir=training/logs_airsim
---datadir=training/datasets
---dataset=data_airsim
+--datadir = training/datasets/airsim_dataset/vitfly
+--dataset = Drone1
 
 --model_type=LSTMNetVIT_Traffic
 --use_traffic
@@ -12,7 +12,7 @@
 --seed=42
 --device=cuda
 --lr=1e-4
---N_eps=100
+--N_eps=200
 --lr_warmup_epochs=5
 --lr_decay
 --save_model_freq=25

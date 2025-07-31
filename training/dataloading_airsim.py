@@ -249,8 +249,8 @@ def dataloader_airsim(data_dir, val_split=0., short=0, seed=None, train_val_dirs
     curr_ctbr = traj_meta_full[:, 16:20] if traj_meta_full.shape[1] > 20 else np.zeros((len(desired_vels), 4))
 
     # 对traffic data做手动归一化
-    bound_per_row = [50, 50, 5, 1, 1, 1, 1,
-                     50, 50, 5, 1, 1, 1, 10]# 分别是x, y, z, vx, vy, vz, radius
+    bound_per_row = [50, 50, 5, 5, 5, 1, 5,
+                     50, 50, 5, 5, 5, 1, 10]# 分别是x, y, z, vx, vy, vz, radius
     
     for i in range(14):
         traffic_data_full[:, i] = traffic_data_full[:, i] / bound_per_row[i]

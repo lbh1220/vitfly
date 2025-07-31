@@ -8,11 +8,11 @@ from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge
 from geometry_msgs.msg import TwistStamped
 from sensor_msgs.msg import Image
-from std_msgs.msg import Empty, Float32
+from std_msgs.msg import Empty, Float32, Float32MultiArray
 import tf.transformations as tf_trans
 
 # from rl_example import load_rl_policy
-from user_code import compute_command_vision_based, compute_command_state_based
+from user_code import compute_command_vision_based, compute_command_state_based, compute_command_vision_based_with_traffic
 from utils import AgileCommandMode, AgileQuadState
 
 import time
@@ -26,6 +26,7 @@ import torch
 
 sys.path.append(opj(os.path.dirname(os.path.abspath(__file__)), '../../models'))
 from model import *
+from model_airsim import LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic
 
 class AgilePilotNode:
     def __init__(self, vision_based=False, model_type=None, model_path=None, desVel=None, keyboard=False):
@@ -46,6 +47,7 @@ class AgilePilotNode:
         self.t1 = 0 #Time flag
         self.timestamp = 0 #Time stamp initial
         self.last_valid_img = None #Image that will be logged
+        self.traffic_data = None  # Store 14-dimensional traffic data
         data_log_format = {'timestamp':[],
                            'desired_vel':[],
                            'quat_1':[],
@@ -98,6 +100,10 @@ class AgilePilotNode:
                 self.model = ViT().to(self.device).float()
             elif model_type == 'ViTLSTM':
                 self.model = LSTMNetVIT().to(self.device).float()                
+            elif model_type == 'LSTMNetVIT_Traffic':
+                self.model = LSTMNetVIT_Traffic(use_traffic=True).to(self.device).float()
+            elif model_type == 'LSTMNetVIT_NoTraffic':
+                self.model = LSTMNetVIT_NoTraffic().to(self.device).float()
             else:
                 print(f'[RUN_COMPETITION] Invalid model_type {model_type}. Exiting.')
                 exit()
@@ -136,8 +142,8 @@ class AgilePilotNode:
         #     tcp_nodelay=True,
         # )
         self.observation_sub = rospy.Subscriber(
-            "/vitfly/"+quad_name+"/v_pref",
-            Float32,
+            "/vitfly/"+quad_name+"/observation",
+            Float32MultiArray,
             self.observation_callback,
             queue_size=1,
             tcp_nodelay=True,
@@ -216,7 +222,22 @@ class AgilePilotNode:
         
     def observation_callback(self, obs):
         # rospy.loginfo(f"[RUN_COMPETITION] Get observation from airsim")
-        self.desiredVel = obs.data
+        
+        # Parse the observation data
+        if len(obs.data) >= 15:  # Should have at least desired_vel + 14 traffic features
+            self.desiredVel = obs.data[0]  # First element is desired velocity
+            self.traffic_data = np.array(obs.data[1:15])  # Next 14 elements are traffic data
+            
+            # Apply the same normalization as in dataloading_airsim.py
+            bound_per_row = [50, 50, 5, 5, 5, 1, 5, 50, 50, 5, 5, 5, 1, 10]
+            for i in range(14):
+                if i < len(self.traffic_data):
+                    self.traffic_data[i] = self.traffic_data[i] / bound_per_row[i]
+        else:
+            # Fallback to simple desired velocity only
+            self.desiredVel = obs.data[0] if len(obs.data) > 0 else 3.0
+            self.traffic_data = np.zeros(14)  # Default zero traffic data
+            
         if not self.publish_commands:
             return
         if not self.vision_based:
@@ -228,7 +249,19 @@ class AgilePilotNode:
         # print('[RUN_COMPETITION] calling compute_command_vision_based')
         start_compute_time = time.time()
 
-        command, (debug_img1, debug_img2), self.model_hidden_state = compute_command_vision_based(self.state, self.last_valid_img, self.prevImg,self.desiredVel, self.model, self.model_hidden_state)
+        # Choose the appropriate compute function based on model type
+        if hasattr(self.model, '__class__') and self.model.__class__.__name__ in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
+            # Use the new traffic-aware function for AirSim models
+            command, (debug_img1, debug_img2), self.model_hidden_state = compute_command_vision_based_with_traffic(
+                self.state, self.last_valid_img, self.prevImg, self.desiredVel, 
+                self.model, self.model_hidden_state, self.traffic_data
+            )
+        else:
+            # Use the original function for backward compatibility
+            command, (debug_img1, debug_img2), self.model_hidden_state = compute_command_vision_based(
+                self.state, self.last_valid_img, self.prevImg, self.desiredVel, 
+                self.model, self.model_hidden_state
+            )
 
         # publish debug images
         self.debug_img1_pub.publish(self.cv_bridge.cv2_to_imgmsg(debug_img1, encoding="passthrough"))
@@ -236,6 +269,10 @@ class AgilePilotNode:
 
         if self.ctr % 30 == 0:
             print(f'[RUN_COMPETITION] compute_command_vision_based took {time.time() - start_compute_time} seconds')
+            if hasattr(self.model, '__class__'):
+                print(f'[RUN_COMPETITION] Using model: {self.model.__class__.__name__}')
+                if hasattr(self.model, 'use_traffic'):
+                    print(f'[RUN_COMPETITION] Traffic support: {self.model.use_traffic}')
 
         self.publish_command(command)
         print(f'[RUN_COMPETITION] output: {command.velocity}')

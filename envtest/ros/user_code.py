@@ -126,6 +126,117 @@ def compute_command_vision_based(state, orig_img, prev_img, desiredVel, trained_
 
     return command, (debugimg1, debugimg2), hidden_state
 
+
+def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desiredVel, trained_model, hidden_state, traffic_data=None):
+    """
+    Enhanced version of compute_command_vision_based that supports traffic information
+    for LSTMNetVIT_Traffic and LSTMNetVIT_NoTraffic models
+    
+    Args:
+        state: Current quadrotor state
+        orig_img: Original depth image
+        prev_img: Previous depth image (unused but kept for compatibility)
+        desiredVel: Desired velocity magnitude
+        trained_model: Neural network model (LSTMNetVIT_Traffic or LSTMNetVIT_NoTraffic)
+        hidden_state: LSTM hidden state
+        traffic_data: 14-dimensional traffic information array (optional)
+    """
+    
+    # Example of LINVEL command (velocity is expressed in world frame)
+    command_mode = 2
+    command = AgileCommand(command_mode)
+    command.t = state.t
+    command.yawrate = 0.0
+    command.mode = 2
+    
+    # Get model device
+    model_device = next(trained_model.parameters()).device
+    
+    ###############
+    ## Load data ##
+    ###############
+
+    q = np.array([state.att[0], state.att[1], state.att[2], state.att[3]])
+    
+    h, w = (60, 90)
+    img = cv2.resize(orig_img, (w, h))
+    img2 = orig_img.copy() # used for generating debugimg
+    img = ToTensor()(np.array(img)).to(model_device)
+
+    # Handle traffic data
+    if traffic_data is not None:
+        traffic_tensor = torch.tensor(traffic_data).view(1, -1).float().to(model_device)
+    else:
+        # Create zero traffic data if not provided
+        traffic_tensor = torch.zeros(1, 14).float().to(model_device)
+
+    # Initialize hidden state if needed
+    if 'LSTMNet' in trained_model.__class__.__name__:
+        if trained_model.__class__.__name__ in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
+            trained_model.lstm.num_layers = 3
+            trained_model.lstm.hidden_size = 128
+        elif trained_model.__class__.__name__ == 'LSTMNet':
+            trained_model.lstm.num_layers = 2
+            trained_model.lstm.hidden_size = 395
+        elif trained_model.__class__.__name__ == 'LSTMNetVIT':
+            trained_model.lstm.num_layers = 3
+            trained_model.lstm.hidden_size = 128
+        elif trained_model.__class__.__name__ == 'UNetConvLSTMNet':
+            trained_model.lstm.num_layers = 2
+            trained_model.lstm.hidden_size = 200
+        else:
+            raise Exception (f"Incorrect Model specified: {trained_model.__class__.__name__}")
+            
+        if state.pos[0] < 0.5 or hidden_state is None: 
+            hidden_state = (
+                torch.zeros(trained_model.lstm.num_layers, trained_model.lstm.hidden_size).float().to(model_device), 
+                torch.zeros(trained_model.lstm.num_layers, trained_model.lstm.hidden_size).float().to(model_device)
+            )
+    
+    # Prepare model inputs
+    model_inputs = [
+        img.view(1, 1, h, w), 
+        torch.tensor(desiredVel).view(1, 1).float().to(model_device), 
+        torch.tensor(q).view(1, -1).float().to(model_device)
+    ]
+    
+    # Add traffic data for traffic-enabled models
+    if hasattr(trained_model, 'use_traffic') and trained_model.use_traffic:
+        model_inputs.append(traffic_tensor)
+    
+    # Add hidden state if LSTM model
+    if hidden_state is not None:
+        model_inputs.append(hidden_state)
+    
+    # Forward pass
+    with torch.no_grad():
+        x, hidden_state = trained_model(model_inputs)
+
+    # Process output
+    x = x.cpu().squeeze().detach().numpy()
+    x[0] = np.clip(x[0], -1, 1)
+    x = x/np.linalg.norm(x)
+    command.velocity = x*desiredVel
+
+    # manual speedup
+    min_xvel_cmd = 1.0
+    hardcoded_ctl_threshold = 2.0
+    if state.pos[0] < hardcoded_ctl_threshold:
+        command.velocity[0] = max(min_xvel_cmd, (state.pos[0]/hardcoded_ctl_threshold)*desiredVel)
+    
+    # creating debug images,
+    # debugimg1 of the stabilized, cropped image with a velocity vector, and 
+    # debugimg2 of the original image with the four points used for stabilization
+
+    h, w = img2.shape
+    arrow_start = (int(w/2), int(h/2))    
+    arrow_end = (int(w/2-command.velocity[1]*(w/3)), int(h/2-command.velocity[2]*(h/3)))
+    debugimg1 = cv2.arrowedLine( img2, arrow_start, arrow_end, (0, 0, 255), 10, )
+
+    debugimg2 = orig_img.copy()
+
+    return command, (debugimg1, debugimg2), hidden_state
+
 # helper function for vectorized expert policy (method_id = 1)
 def find_closest_zero_index(arr):
     center = np.array(arr.shape) // 2  # find the center point of the array

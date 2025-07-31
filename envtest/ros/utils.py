@@ -43,42 +43,48 @@ class AgileCommand:
 
 
 class AgileQuadState:
-    def __init__(self, quad_state):
-        self.t = quad_state.t
-
-        self.pos = np.array(
-            [
-                quad_state.pose.position.x,
-                quad_state.pose.position.y,
-                quad_state.pose.position.z,
-            ],
-            dtype=np.float32,
-        )
-        self.att = np.array(
-            [
-                quad_state.pose.orientation.w,
-                quad_state.pose.orientation.x,
-                quad_state.pose.orientation.y,
-                quad_state.pose.orientation.z,
-            ],
-            dtype=np.float32,
-        )
-        self.vel = np.array(
-            [
-                quad_state.velocity.linear.x,
-                quad_state.velocity.linear.y,
-                quad_state.velocity.linear.z,
-            ],
-            dtype=np.float32,
-        )
-        self.omega = np.array(
-            [
-                quad_state.velocity.angular.x,
-                quad_state.velocity.angular.y,
-                quad_state.velocity.angular.z,
-            ],
-            dtype=np.float32,
-        )
+    def __init__(self, quad_state=None):
+        if quad_state is not None:
+            self.t = quad_state.t
+            self.pos = np.array(
+                [
+                    quad_state.pose.position.x,
+                    quad_state.pose.position.y,
+                    quad_state.pose.position.z,
+                ],
+                dtype=np.float32,
+            )
+            self.att = np.array(
+                [
+                    quad_state.pose.orientation.w,
+                    quad_state.pose.orientation.x,
+                    quad_state.pose.orientation.y,
+                    quad_state.pose.orientation.z,
+                ],
+                dtype=np.float32,
+            )
+            self.vel = np.array(
+                [
+                    quad_state.velocity.linear.x,
+                    quad_state.velocity.linear.y,
+                    quad_state.velocity.linear.z,
+                ],
+                dtype=np.float32,
+            )
+            self.omega = np.array(
+                [
+                    quad_state.velocity.angular.x,
+                    quad_state.velocity.angular.y,
+                    quad_state.velocity.angular.z,
+                ],
+                dtype=np.float32,
+            )
+        else:
+            self.t = 0.0
+            self.pos = np.zeros(3, dtype=np.float32)
+            self.att = np.zeros(4, dtype=np.float32)
+            self.vel = np.zeros(3, dtype=np.float32)
+            self.omega = np.zeros(3, dtype=np.float32)
 
     def __repr__(self):
         repr_str = (

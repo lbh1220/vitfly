@@ -61,6 +61,10 @@ def dataloader(data_dir, val_split=0., short=0, seed=None, train_val_dirs=None):
                 print(f'[DATALOADER] No images in {os.path.basename(traj_folder)}, skipping')
                 continue
 
+        if len(depth_im_files) < 10:
+            print(f'[DATALOADER] Trajectory too short, skipping {os.path.basename(traj_folder)}')
+            continue
+
         if len(depth_im_files) == 0:
             print(f'[DATALOADER] No depth images found in {os.path.basename(traj_folder)}, skipping')
             continue

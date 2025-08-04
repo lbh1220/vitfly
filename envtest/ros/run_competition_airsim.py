@@ -80,7 +80,7 @@ def load_model_config_from_args(model_dir):
         return None
 
 class AgilePilotNode:
-    def __init__(self, vision_based=False, model_type=None, model_path=None, desVel=None, keyboard=False):
+    def __init__(self, vision_based=False, model_path=None, desVel=None, keyboard=False):
         print("[RUN_COMPETITION] Initializing agile_pilot_airsim_node...")
         rospy.init_node("agile_pilot_airsim_node", anonymous=False)
 
@@ -146,6 +146,15 @@ class AgilePilotNode:
             # Load model configuration from args.txt
             model_dir = os.path.dirname(model_path)
             model_config = load_model_config_from_args(model_dir)
+            
+            # Get model_type from config, with fallback
+            if model_config and 'model_type' in model_config:
+                model_type = model_config['model_type']
+                print("[RUN_COMPETITION] Using model_type from args.txt: {}".format(model_type))
+            else:
+                # Fallback to default if not found in args.txt
+                model_type = 'LSTMNetVIT_Traffic'
+                print("[RUN_COMPETITION] Model_type not found in args.txt, using default: {}".format(model_type))
             
             # Initialize model with correct parameters
             if model_type == 'LSTMNet':
@@ -486,11 +495,10 @@ class AgilePilotNode:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Agile Pilot.")
     parser.add_argument("--vision_based", help="Fly vision-based", required=False, dest="vision_based", action="store_true")
-    parser.add_argument('--model_type', type=str, default='LSTMNet', help='string matching model name in lstmArch.py')
-    parser.add_argument('--model_path', type=str, default=None, help='absolute path to model checkpoint')
+    parser.add_argument('--model_path', type=str, default=None, help='absolute path to model checkpoint (model_type will be read from args.txt)')
     parser.add_argument('--des_vel', type=float, default=None, help='desired velocity for quadrotor')
     parser.add_argument("--keyboard", help="Fly state-based mode but take velocity commands from keyboard WASD", required=False, dest="keyboard", action="store_true")
 
     args = parser.parse_args()
-    agile_pilot_node = AgilePilotNode(vision_based=args.vision_based, model_type=args.model_type, model_path=args.model_path, desVel=args.des_vel, keyboard=args.keyboard)
+    agile_pilot_node = AgilePilotNode(vision_based=args.vision_based, model_path=args.model_path, desVel=args.des_vel, keyboard=args.keyboard)
     rospy.spin()

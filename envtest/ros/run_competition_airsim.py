@@ -28,6 +28,57 @@ sys.path.append(opj(os.path.dirname(os.path.abspath(__file__)), '../../models'))
 from model import *
 from model_airsim import LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic
 
+def load_model_config_from_args(model_dir):
+    """
+    Load model configuration from args.txt file in model directory
+    
+    Args:
+        model_dir: Directory containing the trained model and args.txt
+    
+    Returns:
+        dict: Configuration parameters or None if not found
+    """
+    args_file = opj(model_dir, 'args.txt')
+    
+    if not os.path.exists(args_file):
+        print("[MODEL_CONFIG] No args.txt found in {}".format(model_dir))
+        return None
+    
+    config = {}
+    try:
+        with open(args_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    
+                    # Parse different value types
+                    if value.lower() == 'true':
+                        config[key] = True
+                    elif value.lower() == 'false':
+                        config[key] = False
+                    elif value.lower() == 'none':
+                        config[key] = None
+                    elif value.replace('.', '').replace('-', '').replace('e', '').isdigit():
+                        # Try to parse as number
+                        try:
+                            if '.' in value or 'e' in value:
+                                config[key] = float(value)
+                            else:
+                                config[key] = int(value)
+                        except ValueError:
+                            config[key] = value
+                    else:
+                        config[key] = value
+        
+        print("[MODEL_CONFIG] Loaded configuration from {}".format(args_file))
+        return config
+    except Exception as e:
+        print("[MODEL_CONFIG] Error loading configuration: {}".format(e))
+        return None
+
 class AgilePilotNode:
     def __init__(self, vision_based=False, model_type=None, model_path=None, desVel=None, keyboard=False):
         print("[RUN_COMPETITION] Initializing agile_pilot_airsim_node...")
@@ -91,6 +142,12 @@ class AgilePilotNode:
         if model_path is not None:
             print("[RUN_COMPETITION] Model loading from {} ...".format(model_path))
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            
+            # Load model configuration from args.txt
+            model_dir = os.path.dirname(model_path)
+            model_config = load_model_config_from_args(model_dir)
+            
+            # Initialize model with correct parameters
             if model_type == 'LSTMNet':
                 self.model = LSTMNet().to(self.device).float()
             elif model_type == 'UNetLSTM':
@@ -102,7 +159,24 @@ class AgilePilotNode:
             elif model_type == 'ViTLSTM':
                 self.model = LSTMNetVIT().to(self.device).float()                
             elif model_type == 'LSTMNetVIT_Traffic':
-                self.model = LSTMNetVIT_Traffic(use_traffic=True).to(self.device).float()
+                # Use saved MLP parameters if available
+                if model_config and 'traffic_mlp_hidden' in model_config and 'traffic_mlp_output' in model_config:
+                    traffic_mlp_hidden = model_config['traffic_mlp_hidden']
+                    traffic_mlp_output = model_config['traffic_mlp_output']
+                    print("[RUN_COMPETITION] Using saved MLP parameters: hidden={}, output={}".format(
+                        traffic_mlp_hidden, traffic_mlp_output))
+                else:
+                    # Fallback to defaults
+                    traffic_mlp_hidden = 64
+                    traffic_mlp_output = 32
+                    print("[RUN_COMPETITION] Using default MLP parameters: hidden={}, output={}".format(
+                        traffic_mlp_hidden, traffic_mlp_output))
+                
+                self.model = LSTMNetVIT_Traffic(
+                    use_traffic=True,
+                    traffic_mlp_hidden=traffic_mlp_hidden,
+                    traffic_mlp_output=traffic_mlp_output
+                ).to(self.device).float()
             elif model_type == 'LSTMNetVIT_NoTraffic':
                 self.model = LSTMNetVIT_NoTraffic().to(self.device).float()
             else:
@@ -118,7 +192,6 @@ class AgilePilotNode:
             
             # Load traffic normalization parameters if using traffic model
             if model_type in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
-                model_dir = os.path.dirname(model_path)
                 self.traffic_norm_params = load_traffic_norm_params(model_dir)
 
             print("[RUN_COMPETITION] Model loaded")

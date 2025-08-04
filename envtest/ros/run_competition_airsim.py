@@ -12,7 +12,7 @@ from std_msgs.msg import Empty, Float32, Float32MultiArray
 import tf.transformations as tf_trans
 
 # from rl_example import load_rl_policy
-from user_code import compute_command_vision_based, compute_command_state_based, compute_command_vision_based_with_traffic
+from user_code import compute_command_vision_based, compute_command_state_based, compute_command_vision_based_with_traffic, load_traffic_norm_params, apply_traffic_normalization
 from utils import AgileCommandMode, AgileQuadState
 
 import time
@@ -48,6 +48,7 @@ class AgilePilotNode:
         self.timestamp = 0 #Time stamp initial
         self.last_valid_img = None #Image that will be logged
         self.traffic_data = None  # Store 14-dimensional traffic data
+        self.traffic_norm_params = None  # Store traffic normalization parameters
         data_log_format = {'timestamp':[],
                            'desired_vel':[],
                            'quat_1':[],
@@ -78,17 +79,17 @@ class AgilePilotNode:
         self.data_collection_xrange = [2, 60]
 
         # make the folder for the epoch
-        self.folder = f"train_set/{int(time.time()*100)}" 
+        self.folder = "train_set/{}".format(int(time.time()*100))
         os.mkdir(self.folder)
 
         self.desiredVel = desVel #self.readVel("velocity.txt") #np.random.uniform(low=2.0, high=3.0)
         print()
-        print(f"[RUN_COMPETITION] Desired velocity = {self.desiredVel}")
+        print("[RUN_COMPETITION] Desired velocity = {}".format(self.desiredVel))
         print()
 
         # load trained model here (copied over from user_code.py)
         if model_path is not None:
-            print(f"[RUN_COMPETITION] Model loading from {model_path} ...")
+            print("[RUN_COMPETITION] Model loading from {} ...".format(model_path))
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if model_type == 'LSTMNet':
                 self.model = LSTMNet().to(self.device).float()
@@ -105,7 +106,7 @@ class AgilePilotNode:
             elif model_type == 'LSTMNetVIT_NoTraffic':
                 self.model = LSTMNetVIT_NoTraffic().to(self.device).float()
             else:
-                print(f'[RUN_COMPETITION] Invalid model_type {model_type}. Exiting.')
+                print('[RUN_COMPETITION] Invalid model_type {}. Exiting.'.format(model_type))
                 exit()
 
             # Give full path if possible since the bash script runs from outside the folder
@@ -114,8 +115,13 @@ class AgilePilotNode:
 
             # Initialize hidden state
             self.model_hidden_state = None
+            
+            # Load traffic normalization parameters if using traffic model
+            if model_type in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
+                model_dir = os.path.dirname(model_path)
+                self.traffic_norm_params = load_traffic_norm_params(model_dir)
 
-            print(f"[RUN_COMPETITION] Model loaded")
+            print("[RUN_COMPETITION] Model loaded")
             time.sleep(2)
 
         self.start_time = 0
@@ -156,7 +162,7 @@ class AgilePilotNode:
             tcp_nodelay=True,
         )
         self.img_sub = rospy.Subscriber(
-            "/airsim_node/Drone1/Camera_front/DepthPlanar",
+            "/airsim_node/Drone1/CAM_FRONT/DepthPlanar",
             Image,
             self.img_callback,
             queue_size=1,
@@ -164,7 +170,7 @@ class AgilePilotNode:
         )
 
         self.rgb_img_sub = rospy.Subscriber(
-            "/airsim_node/Drone1/Camera_front/Scene",
+            "/airsim_node/Drone1/CAM_FRONT/Scene",
             Image,
             self.rgb_callback,
             queue_size=1,
@@ -228,11 +234,8 @@ class AgilePilotNode:
             self.desiredVel = obs.data[0]  # First element is desired velocity
             self.traffic_data = np.array(obs.data[1:15])  # Next 14 elements are traffic data
             
-            # Apply the same normalization as in dataloading_airsim.py
-            bound_per_row = [50, 50, 5, 5, 5, 1, 5, 50, 50, 5, 5, 5, 1, 10]
-            for i in range(14):
-                if i < len(self.traffic_data):
-                    self.traffic_data[i] = self.traffic_data[i] / bound_per_row[i]
+            # Note: Traffic data normalization is now handled in compute_command function
+            # using the loaded normalization parameters
         else:
             # Fallback to simple desired velocity only
             self.desiredVel = obs.data[0] if len(obs.data) > 0 else 3.0
@@ -254,7 +257,7 @@ class AgilePilotNode:
             # Use the new traffic-aware function for AirSim models
             command, (debug_img1, debug_img2), self.model_hidden_state = compute_command_vision_based_with_traffic(
                 self.state, self.last_valid_img, self.prevImg, self.desiredVel, 
-                self.model, self.model_hidden_state, self.traffic_data
+                self.model, self.model_hidden_state, self.traffic_data, self.traffic_norm_params
             )
         else:
             # Use the original function for backward compatibility
@@ -268,14 +271,14 @@ class AgilePilotNode:
         self.debug_img2_pub.publish(self.cv_bridge.cv2_to_imgmsg(debug_img2, encoding="passthrough"))
 
         if self.ctr % 30 == 0:
-            print(f'[RUN_COMPETITION] compute_command_vision_based took {time.time() - start_compute_time} seconds')
+            print('[RUN_COMPETITION] compute_command_vision_based took {} seconds'.format(time.time() - start_compute_time))
             if hasattr(self.model, '__class__'):
-                print(f'[RUN_COMPETITION] Using model: {self.model.__class__.__name__}')
+                print('[RUN_COMPETITION] Using model: {}'.format(self.model.__class__.__name__))
                 if hasattr(self.model, 'use_traffic'):
-                    print(f'[RUN_COMPETITION] Traffic support: {self.model.use_traffic}')
+                    print('[RUN_COMPETITION] Traffic support: {}'.format(self.model.use_traffic))
 
         self.publish_command(command)
-        print(f'[RUN_COMPETITION] output: {command.velocity}')
+        print('[RUN_COMPETITION] output: {}'.format(command.velocity))
 
         if self.state.pos[0] < 0.1:
             self.start_time = command.t

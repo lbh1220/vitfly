@@ -234,6 +234,38 @@ def dataloader_airsim(data_dir, val_split=0., short=0, seed=None, train_val_dirs
         # 如果不使用交通数据，创建全零数组
         traffic_data_full = np.zeros((len(desired_vels), 14))
 
+    # 数据驱动的交通数据归一化
+    traffic_norm_params = None
+    if use_traffic and traffic_data_full.shape[0] > 0:
+        # 计算每个特征的均值和标准差
+        traffic_mean = np.mean(traffic_data_full, axis=0)
+        traffic_std = np.std(traffic_data_full, axis=0)
+        
+        # 避免除零错误
+        traffic_std = np.where(traffic_std == 0, 1.0, traffic_std)
+        
+        # 标准化 (z-score normalization)
+        traffic_data_full = (traffic_data_full - traffic_mean) / traffic_std
+        
+        # 保存归一化参数
+        traffic_norm_params = {
+            'mean': traffic_mean,
+            'std': traffic_std,
+            'method': 'zscore'
+        }
+        
+        print("[DATALOADER] Traffic data normalized using z-score normalization")
+        print("[DATALOADER] Traffic mean: {}".format(traffic_mean))
+        print("[DATALOADER] Traffic std: {}".format(traffic_std))
+    else:
+        print("[DATALOADER] Using manual bound normalization for traffic data")
+        # 对traffic data做手动归一化（保持原有逻辑作为备选）
+        bound_per_row = [50, 50, 5, 5, 5, 1, 5,
+                         50, 50, 5, 5, 5, 1, 10]# 分别是x, y, z, vx, vy, vz, radius
+        
+        for i in range(14):
+            traffic_data_full[:, i] = traffic_data_full[:, i] / bound_per_row[i]
+
     # 标准化处理（针对br_cmd数据，第17-20列）
     if traj_meta_full.shape[1] > 20:
         for i in range(4):
@@ -247,13 +279,6 @@ def dataloader_airsim(data_dir, val_split=0., short=0, seed=None, train_val_dirs
                     traj_meta_full[:, col_idx] = (traj_meta_full[:, col_idx] - mean) / (2 * std)
 
     curr_ctbr = traj_meta_full[:, 16:20] if traj_meta_full.shape[1] > 20 else np.zeros((len(desired_vels), 4))
-
-    # 对traffic data做手动归一化
-    bound_per_row = [50, 50, 5, 5, 5, 1, 5,
-                     50, 50, 5, 5, 5, 1, 10]# 分别是x, y, z, vx, vy, vz, radius
-    
-    for i in range(14):
-        traffic_data_full[:, i] = traffic_data_full[:, i] / bound_per_row[i]
 
     # 训练验证集分割
     num_val_trajs = int(val_split * len(traj_lengths))
@@ -280,7 +305,7 @@ def dataloader_airsim(data_dir, val_split=0., short=0, seed=None, train_val_dirs
     train_data = (traj_meta_train, traj_ims_train, traj_lengths_train, desired_vels_train, curr_quats_train, curr_ctbr_train, traffic_data_train)
     val_data = (traj_meta_val, traj_ims_val, traj_lengths_val, desired_vels_val, curr_quats_val, curr_ctbr_val, traffic_data_val)
     
-    return train_data, val_data, 1, (traj_folders[num_val_trajs:], traj_folders[:num_val_trajs])
+    return train_data, val_data, 1, (traj_folders[num_val_trajs:], traj_folders[:num_val_trajs]), traffic_norm_params
 
 def preload(items, device='cpu'):
     """Convert numpy arrays to torch tensors and move to device"""

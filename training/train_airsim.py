@@ -59,11 +59,19 @@ class TRAINER_AIRSIM:
         ## Workspace ##
         ###############
         traffic_suffix = "_with_traffic" if self.use_traffic else "_no_traffic"
+        
+        # Add MLP parameters to workspace name if using traffic model
+        if self.use_traffic:
+            traffic_mlp_hidden = getattr(self.args, 'traffic_mlp_hidden', 64)
+            traffic_mlp_output = getattr(self.args, 'traffic_mlp_output', 32)
+            mlp_suffix = "_h{}_o{}".format(traffic_mlp_hidden, traffic_mlp_output)
+            traffic_suffix += mlp_suffix
+        
         expname = datetime.now().strftime('d%m_%d_t%H_%M') + traffic_suffix
         self.workspace = opj(self.basedir, self.logdir, expname)
         wkspc_ctr = 2
         while os.path.exists(self.workspace):
-            self.workspace = opj(self.basedir, self.logdir, expname+f'_{str(wkspc_ctr)}')
+            self.workspace = opj(self.basedir, self.logdir, expname+'_{}'.format(str(wkspc_ctr)))
             wkspc_ctr += 1
         self.workspace = self.workspace + self.ws_suffix
         os.makedirs(self.workspace)
@@ -113,11 +121,19 @@ class TRAINER_AIRSIM:
         ##################################
         self.mylogger('[SETUP] Establishing model and optimizer.')
         if self.model_type == 'LSTMNetVIT_Traffic':
-            self.model = model_library.LSTMNetVIT_Traffic(use_traffic=self.use_traffic).to(self.device).float()
+            # Add traffic_mlp parameters from args if available, otherwise use defaults
+            traffic_mlp_hidden = getattr(self.args, 'traffic_mlp_hidden', 64)
+            traffic_mlp_output = getattr(self.args, 'traffic_mlp_output', 32)
+            self.model = model_library.LSTMNetVIT_Traffic(
+                use_traffic=self.use_traffic, 
+                traffic_mlp_hidden=traffic_mlp_hidden,
+                traffic_mlp_output=traffic_mlp_output
+            ).to(self.device).float()
+            self.mylogger('[SETUP] Using traffic MLP with hidden size: {}, output size: {}'.format(traffic_mlp_hidden, traffic_mlp_output))
         elif self.model_type == 'LSTMNetVIT_NoTraffic':
             self.model = model_library.LSTMNetVIT_NoTraffic().to(self.device).float()
         else:
-            self.mylogger(f'[SETUP] Invalid model_type {self.model_type}. Available: LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic')
+            self.mylogger('[SETUP] Invalid model_type {}. Available: LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic'.format(self.model_type))
             exit()
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -142,8 +158,8 @@ class TRAINER_AIRSIM:
         self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
 
     def dataloader(self, val_split, short=0, seed=None, train_val_dirs=None):
-        self.mylogger(f'[DATALOADER] Loading from {self.dataset_dir}')
-        train_data, val_data, is_png, (self.train_dirs, self.val_dirs) = dataloader_airsim(
+        self.mylogger('[DATALOADER] Loading from {}'.format(self.dataset_dir))
+        train_data, val_data, is_png, (self.train_dirs, self.val_dirs), traffic_norm_params = dataloader_airsim(
             opj(self.basedir, self.dataset_dir), 
             val_split=val_split, 
             short=short, 
@@ -152,13 +168,21 @@ class TRAINER_AIRSIM:
             use_traffic=self.use_traffic
         )
         
+        # Save traffic normalization parameters
+        if traffic_norm_params is not None:
+            import pickle
+            norm_params_path = opj(self.workspace, 'traffic_norm_params.pkl')
+            with open(norm_params_path, 'wb') as f:
+                pickle.dump(traffic_norm_params, f)
+            self.mylogger('[DATALOADER] Traffic normalization parameters saved to {}'.format(norm_params_path))
+        
         # Unpack data (including traffic data)
         self.train_meta, self.train_ims, self.train_trajlength, self.train_desvel, self.train_currquat, self.train_currctbr, self.train_traffic = train_data
         self.val_meta, self.val_ims, self.val_trajlength, self.val_desvel, self.val_currquat, self.val_currctbr, self.val_traffic = val_data
         
-        self.mylogger(f'[DATALOADER] Dataloading done | train images {self.train_ims.shape}, val images {self.val_ims.shape}')
+        self.mylogger('[DATALOADER] Dataloading done | train images {}, val images {}'.format(self.train_ims.shape, self.val_ims.shape))
         if self.use_traffic:
-            self.mylogger(f'[DATALOADER] Traffic data | train {self.train_traffic.shape}, val {self.val_traffic.shape}')
+            self.mylogger('[DATALOADER] Traffic data | train {}, val {}'.format(self.train_traffic.shape, self.val_traffic.shape))
 
         # Preload data to device
         data_to_preload = [self.train_meta, self.train_ims, self.train_desvel, self.train_currquat, self.train_currctbr, self.train_traffic]
@@ -340,6 +364,8 @@ def argparsing():
     parser.add_argument('--lr_decay', action='store_true', default=False, help='whether to use lr_decay')
     parser.add_argument('--save_model_freq', type=int, default=25, help='frequency with which to save model checkpoints')
     parser.add_argument('--val_freq', type=int, default=10, help='frequency with which to evaluate on validation set')
+    parser.add_argument('--traffic_mlp_hidden', type=int, default=64, help='hidden size for the traffic MLP in LSTMNetVIT_Traffic')
+    parser.add_argument('--traffic_mlp_output', type=int, default=32, help='output size for the traffic MLP in LSTMNetVIT_Traffic')
 
     args = parser.parse_args()
     

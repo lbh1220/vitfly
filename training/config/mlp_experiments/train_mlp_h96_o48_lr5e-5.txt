@@ -8,8 +8,8 @@
 --use_traffic
 --val_split=0.2
 --short=0 
---traffic_mlp_hidden = 64
---traffic_mlp_output = 64
+--traffic_mlp_hidden = 96
+--traffic_mlp_output = 48
 
 --seed=42
 --device=cuda
@@ -19,3 +19,4 @@
 --lr_decay
 --save_model_freq=25
 --val_freq=10
+--ws_suffix=_mlp_h96_o48_lr5e-5

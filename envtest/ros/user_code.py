@@ -13,6 +13,67 @@ from os.path import join as opj
 sys.path.append(opj(os.path.dirname(os.path.abspath(__file__)), '../../models'))
 from model import *
 
+def load_traffic_norm_params(model_dir):
+    """
+    Load traffic normalization parameters from model directory
+    
+    Args:
+        model_dir: Directory containing the trained model and norm params
+    
+    Returns:
+        dict: Normalization parameters or None if not found
+    """
+    import pickle
+    norm_params_path = opj(model_dir, 'traffic_norm_params.pkl')
+    
+    if os.path.exists(norm_params_path):
+        try:
+            with open(norm_params_path, 'rb') as f:
+                norm_params = pickle.load(f)
+            print("[TRAFFIC_NORM] Loaded traffic normalization parameters from {}".format(norm_params_path))
+            print("[TRAFFIC_NORM] Method: {}, Mean shape: {}, Std shape: {}".format(
+                norm_params.get('method', 'unknown'), 
+                norm_params['mean'].shape if 'mean' in norm_params else 'N/A',
+                norm_params['std'].shape if 'std' in norm_params else 'N/A'
+            ))
+            return norm_params
+        except Exception as e:
+            print("[TRAFFIC_NORM] Error loading normalization parameters: {}".format(e))
+            return None
+    else:
+        print("[TRAFFIC_NORM] No normalization parameters found at {}".format(norm_params_path))
+        return None
+
+def apply_traffic_normalization(traffic_data, norm_params):
+    """
+    Apply normalization to traffic data using saved parameters
+    
+    Args:
+        traffic_data: Raw traffic data (14-dim array)
+        norm_params: Normalization parameters dict
+    
+    Returns:
+        Normalized traffic data
+    """
+    if norm_params is None:
+        print("[TRAFFIC_NORM] Using fallback manual normalization")
+        # Fallback to manual normalization
+        bound_per_row = [50, 50, 5, 5, 5, 1, 5, 50, 50, 5, 5, 5, 1, 10]
+        normalized_data = traffic_data.copy()
+        for i in range(min(14, len(normalized_data))):
+            normalized_data[i] = normalized_data[i] / bound_per_row[i]
+        return normalized_data
+    
+    if norm_params.get('method') == 'zscore':
+        # Apply z-score normalization
+        mean = norm_params['mean']
+        std = norm_params['std']
+        normalized_data = (traffic_data - mean) / std
+        return normalized_data
+    else:
+        print("[TRAFFIC_NORM] Unknown normalization method: {}".format(norm_params.get('method')))
+        return traffic_data
+
 # 3D line determined by two points (x1, y1, z1) and (x2, y2, z2)
 # sphere determined by a center point (x3, y3, z3) and radius r
 # quantity b^2 - 4ac < 0 then there is no intersection, where:
@@ -127,7 +188,7 @@ def compute_command_vision_based(state, orig_img, prev_img, desiredVel, trained_
     return command, (debugimg1, debugimg2), hidden_state
 
 
-def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desiredVel, trained_model, hidden_state, traffic_data=None):
+def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desiredVel, trained_model, hidden_state, traffic_data=None, traffic_norm_params=None):
     """
     Enhanced version of compute_command_vision_based that supports traffic information
     for LSTMNetVIT_Traffic and LSTMNetVIT_NoTraffic models
@@ -140,6 +201,7 @@ def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desired
         trained_model: Neural network model (LSTMNetVIT_Traffic or LSTMNetVIT_NoTraffic)
         hidden_state: LSTM hidden state
         traffic_data: 14-dimensional traffic information array (optional)
+        traffic_norm_params: Normalization parameters for traffic data (optional)
     """
     
     # Example of LINVEL command (velocity is expressed in world frame)
@@ -163,9 +225,11 @@ def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desired
     img2 = orig_img.copy() # used for generating debugimg
     img = ToTensor()(np.array(img)).to(model_device)
 
-    # Handle traffic data
+    # Handle traffic data with proper normalization
     if traffic_data is not None:
-        traffic_tensor = torch.tensor(traffic_data).view(1, -1).float().to(model_device)
+        # Apply normalization using saved parameters
+        normalized_traffic = apply_traffic_normalization(traffic_data, traffic_norm_params)
+        traffic_tensor = torch.tensor(normalized_traffic).view(1, -1).float().to(model_device)
     else:
         # Create zero traffic data if not provided
         traffic_tensor = torch.zeros(1, 14).float().to(model_device)
@@ -185,7 +249,7 @@ def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desired
             trained_model.lstm.num_layers = 2
             trained_model.lstm.hidden_size = 200
         else:
-            raise Exception (f"Incorrect Model specified: {trained_model.__class__.__name__}")
+            raise Exception ("Incorrect Model specified: {}".format(trained_model.__class__.__name__))
             
         if state.pos[0] < 0.5 or hidden_state is None: 
             hidden_state = (

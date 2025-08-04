@@ -34,11 +34,13 @@ def refine_inputs(X):
 class LSTMNetVIT_Traffic(nn.Module):
     """
     ViT+LSTM Network with Traffic Information
-    Modified to include 14-dimensional traffic data input
+    Modified to include 14-dimensional traffic data input with MLP processing
     """
-    def __init__(self, use_traffic=True):
+    def __init__(self, use_traffic=True, traffic_mlp_hidden=64, traffic_mlp_output=32):
         super().__init__()
         self.use_traffic = use_traffic
+        self.traffic_mlp_hidden = traffic_mlp_hidden
+        self.traffic_mlp_output = traffic_mlp_output
         
         self.encoder_blocks = nn.ModuleList([
             MixTransformerEncoderLayer(1, 32, patch_size=7, stride=4, padding=3, n_layers=2, reduction_ratio=8, num_heads=1, expansion_factor=8),
@@ -47,11 +49,23 @@ class LSTMNetVIT_Traffic(nn.Module):
 
         self.decoder = spectral_norm(nn.Linear(4608, 512))
         
-        # Calculate LSTM input size based on whether traffic data is used
+        # Traffic MLP for processing 14-dimensional traffic data
         if self.use_traffic:
-            lstm_input_size = 512 + 1 + 4 + 14  # vision + desired_vel + quaternion + traffic = 531
+            self.traffic_mlp = nn.Sequential(
+                spectral_norm(nn.Linear(14, traffic_mlp_hidden)),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                spectral_norm(nn.Linear(traffic_mlp_hidden, traffic_mlp_hidden)),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                spectral_norm(nn.Linear(traffic_mlp_hidden, traffic_mlp_output))  # Use configurable output size
+            )
+            lstm_input_size = 512 + 1 + 4 + traffic_mlp_output  # vision + desired_vel + quaternion + processed_traffic
         else:
             lstm_input_size = 512 + 1 + 4  # vision + desired_vel + quaternion = 517
+        
+        # Layer normalization for feature fusion
+        self.feature_fusion_norm = nn.LayerNorm(lstm_input_size)
             
         self.lstm = nn.LSTM(input_size=lstm_input_size, hidden_size=128, num_layers=3, dropout=0.1)
         self.nn_fc2 = spectral_norm(nn.Linear(128, 3))
@@ -75,29 +89,39 @@ class LSTMNetVIT_Traffic(nn.Module):
         # Concatenate features: vision + desired_vel + quaternion
         features = [out, X[1]/10, X[2]]
         
-        # Add traffic data if available and enabled
+        # Process traffic data if available and enabled
         if self.use_traffic and len(X) > 3:
             # Check if traffic data is provided (X[3] could be traffic or hidden state)
             if len(X) > 4:  # X[3] is traffic, X[4] is hidden state
-                features.append(X[3])  # Add traffic data
-                out = torch.cat(features, dim=1).float()
-                out, h = self.lstm(out, X[4])
+                traffic_processed = self.traffic_mlp(X[3])  # Process traffic through MLP
+                features.append(traffic_processed)  # Add processed traffic features
+                combined_features = torch.cat(features, dim=1).float()
+                # Apply layer normalization before LSTM
+                normalized_features = self.feature_fusion_norm(combined_features)
+                out, h = self.lstm(normalized_features, X[4])
             else:  # X[3] could be traffic data or hidden state
                 # Assume if X[3] has 14 features it's traffic data, otherwise it's hidden state
                 if hasattr(X[3], 'shape') and len(X[3].shape) == 2 and X[3].shape[1] == 14:
-                    features.append(X[3])  # Add traffic data
-                    out = torch.cat(features, dim=1).float()
-                    out, h = self.lstm(out)
+                    traffic_processed = self.traffic_mlp(X[3])  # Process traffic through MLP
+                    features.append(traffic_processed)  # Add processed traffic features
+                    combined_features = torch.cat(features, dim=1).float()
+                    # Apply layer normalization before LSTM
+                    normalized_features = self.feature_fusion_norm(combined_features)
+                    out, h = self.lstm(normalized_features)
                 else:  # X[3] is hidden state
-                    out = torch.cat(features, dim=1).float()
-                    out, h = self.lstm(out, X[3])
+                    combined_features = torch.cat(features, dim=1).float()
+                    # Apply layer normalization before LSTM
+                    normalized_features = self.feature_fusion_norm(combined_features)
+                    out, h = self.lstm(normalized_features, X[3])
         else:
             # No traffic data
-            out = torch.cat(features, dim=1).float()
+            combined_features = torch.cat(features, dim=1).float()
+            # Apply layer normalization before LSTM
+            normalized_features = self.feature_fusion_norm(combined_features)
             if len(X) > 3:
-                out, h = self.lstm(out, X[3])  # X[3] is hidden state
+                out, h = self.lstm(normalized_features, X[3])  # X[3] is hidden state
             else:
-                out, h = self.lstm(out)
+                out, h = self.lstm(normalized_features)
         
         out = self.nn_fc2(out)
         return out, h
@@ -145,10 +169,21 @@ class LSTMNetVIT_NoTraffic(nn.Module):
 if __name__ == '__main__':
     print("MODEL NUM PARAMS ARE")
     
-    model_with_traffic = LSTMNetVIT_Traffic(use_traffic=True).float()
-    print("LSTMNetVIT with Traffic: ")
-    print(sum(p.numel() for p in model_with_traffic.parameters() if p.requires_grad))
+    # Test different MLP configurations
+    configs = [
+        (64, 32),   # (hidden, output)
+        (64, 64),
+        (128, 32),
+        (128, 64),
+        (128, 128),
+    ]
+    
+    for hidden, output in configs:
+        model_with_traffic = LSTMNetVIT_Traffic(use_traffic=True, traffic_mlp_hidden=hidden, traffic_mlp_output=output).float()
+        total_params = sum(p.numel() for p in model_with_traffic.parameters() if p.requires_grad)
+        traffic_params = sum(p.numel() for p in model_with_traffic.traffic_mlp.parameters() if p.requires_grad)
+        print("LSTMNetVIT_Traffic (hidden={}, output={}): Total={}, Traffic MLP={}".format(
+            hidden, output, total_params, traffic_params))
     
     model_without_traffic = LSTMNetVIT_NoTraffic().float()
-    print("LSTMNetVIT without Traffic: ")
-    print(sum(p.numel() for p in model_without_traffic.parameters() if p.requires_grad)) 
+    print("LSTMNetVIT_NoTraffic: {}".format(sum(p.numel() for p in model_without_traffic.parameters() if p.requires_grad))) 

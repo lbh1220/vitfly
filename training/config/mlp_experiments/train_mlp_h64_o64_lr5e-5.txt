@@ -19,3 +19,4 @@
 --lr_decay
 --save_model_freq=25
 --val_freq=10
+--ws_suffix=_mlp_h64_o64_lr5e-5

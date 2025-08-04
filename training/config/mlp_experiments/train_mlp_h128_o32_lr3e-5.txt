@@ -8,14 +8,15 @@
 --use_traffic
 --val_split=0.2
 --short=0 
---traffic_mlp_hidden = 64
---traffic_mlp_output = 64
+--traffic_mlp_hidden = 128
+--traffic_mlp_output = 32
 
 --seed=42
 --device=cuda
---lr=5e-5
+--lr=3e-5
 --N_eps=200
 --lr_warmup_epochs=5
 --lr_decay
 --save_model_freq=25
 --val_freq=10
+--ws_suffix=_mlp_h128_o32_lr3e-5

@@ -26,7 +26,7 @@ import torch
 
 sys.path.append(opj(os.path.dirname(os.path.abspath(__file__)), '../../models'))
 from model import *
-from model_airsim import LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic
+from model_airsim import LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic, LSTMNetVIT_GAT, LSTMNetVIT_NoTraffic_2D
 
 def load_model_config_from_args(model_dir):
     """
@@ -188,6 +188,32 @@ class AgilePilotNode:
                 ).to(self.device).float()
             elif model_type == 'LSTMNetVIT_NoTraffic':
                 self.model = LSTMNetVIT_NoTraffic().to(self.device).float()
+            elif model_type == 'LSTMNetVIT_GAT':
+                # Use saved GAT parameters if available
+                if model_config:
+                    embed_dim = model_config.get('embed_dim', 64)
+                    gat_hidden_dim = model_config.get('gat_hidden_dim', 128)
+                    gat_num_heads = model_config.get('gat_num_heads', 4)
+                    gat_num_layers = model_config.get('gat_num_layers', 2)
+                    print("[RUN_COMPETITION] Using saved GAT parameters: embed_dim={}, gat_hidden_dim={}, gat_num_heads={}, gat_num_layers={}".format(
+                        embed_dim, gat_hidden_dim, gat_num_heads, gat_num_layers))
+                else:
+                    # Fallback to defaults
+                    embed_dim = 64
+                    gat_hidden_dim = 128
+                    gat_num_heads = 4
+                    gat_num_layers = 2
+                    print("[RUN_COMPETITION] Using default GAT parameters: embed_dim={}, gat_hidden_dim={}, gat_num_heads={}, gat_num_layers={}".format(
+                        embed_dim, gat_hidden_dim, gat_num_heads, gat_num_layers))
+                
+                self.model = LSTMNetVIT_GAT(
+                    embed_dim=embed_dim,
+                    gat_hidden_dim=gat_hidden_dim,
+                    gat_num_heads=gat_num_heads,
+                    gat_num_layers=gat_num_layers
+                ).to(self.device).float()
+            elif model_type == 'LSTMNetVIT_NoTraffic_2D':
+                self.model = LSTMNetVIT_NoTraffic_2D().to(self.device).float()
             else:
                 print('[RUN_COMPETITION] Invalid model_type {}. Exiting.'.format(model_type))
                 exit()
@@ -200,7 +226,7 @@ class AgilePilotNode:
             self.model_hidden_state = None
             
             # Load traffic normalization parameters if using traffic model
-            if model_type in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
+            if model_type in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic', 'LSTMNetVIT_GAT', 'LSTMNetVIT_NoTraffic_2D']:
                 self.traffic_norm_params = load_traffic_norm_params(model_dir)
 
             print("[RUN_COMPETITION] Model loaded")
@@ -312,17 +338,23 @@ class AgilePilotNode:
         # rospy.loginfo(f"[RUN_COMPETITION] Get observation from airsim")
         
         # Parse the observation data
-        if len(obs.data) >= 15:  # Should have at least desired_vel + 14 traffic features
-            self.desiredVel = obs.data[0]  # First element is desired velocity
-            self.traffic_data = np.array(obs.data[1:15])  # Next 14 elements are traffic data
+        if len(obs.data) >= 29:  # Should have robot_states(4) + traffic_states(25) = 29
+            # Parse robot_states: [goal_x, goal_y, yaw, desired_vel]
+            robot_states = np.array(obs.data[0:4])  # First 4 elements are robot_states
+            self.desiredVel = robot_states[3]  # desired_vel is the 4th element
+            
+            # Parse traffic_states: (5, 5) array flattened to 25 dimensions
+            traffic_states = np.array(obs.data[4:29])  # Next 25 elements are traffic_states
+            self.traffic_data = traffic_states.reshape(5, 5)  # Reshape to (5, 5) for processing
             
             # Note: Traffic data normalization is now handled in compute_command function
             # using the loaded normalization parameters
         else:
             # Fallback to simple desired velocity only
             self.desiredVel = obs.data[0] if len(obs.data) > 0 else 3.0
-            self.traffic_data = np.zeros(14)  # Default zero traffic data
-            
+            self.traffic_data = np.zeros((5, 5))  # Default zero traffic data
+            print("[RUN_COMPETITION] Warning: Expected 29-dimensional observation, got {} dimensions".format(len(obs.data)))
+        
         if not self.publish_commands:
             return
         if not self.vision_based:
@@ -335,7 +367,7 @@ class AgilePilotNode:
         start_compute_time = time.time()
 
         # Choose the appropriate compute function based on model type
-        if hasattr(self.model, '__class__') and self.model.__class__.__name__ in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
+        if hasattr(self.model, '__class__') and self.model.__class__.__name__ in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic', 'LSTMNetVIT_GAT', 'LSTMNetVIT_NoTraffic_2D']:
             # Use the new traffic-aware function for AirSim models
             command, (debug_img1, debug_img2), self.model_hidden_state = compute_command_vision_based_with_traffic(
                 self.state, self.last_valid_img, self.prevImg, self.desiredVel, 

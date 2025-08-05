@@ -23,3 +23,4 @@
 --gat_hidden_dim=128
 --gat_num_heads=4
 --gat_num_layers=2
+--ws_suffix=_gat_large_128_8heads_2layers_lr1e-4

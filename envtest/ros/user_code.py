@@ -15,7 +15,7 @@ from model import *
 
 def load_traffic_norm_params(model_dir):
     """
-    Load traffic normalization parameters from model directory
+    Load normalization parameters from model directory
     
     Args:
         model_dir: Directory containing the trained model and norm params
@@ -24,54 +24,78 @@ def load_traffic_norm_params(model_dir):
         dict: Normalization parameters or None if not found
     """
     import pickle
-    norm_params_path = opj(model_dir, 'traffic_norm_params.pkl')
+    norm_params_path = opj(model_dir, 'norm_params.pkl')  # Updated path for new format
     
     if os.path.exists(norm_params_path):
         try:
             with open(norm_params_path, 'rb') as f:
                 norm_params = pickle.load(f)
-            print("[TRAFFIC_NORM] Loaded traffic normalization parameters from {}".format(norm_params_path))
-            print("[TRAFFIC_NORM] Method: {}, Mean shape: {}, Std shape: {}".format(
+            print("[NORM_PARAMS] Loaded normalization parameters from {}".format(norm_params_path))
+            print("[NORM_PARAMS] Method: {}, Keys: {}".format(
                 norm_params.get('method', 'unknown'), 
-                norm_params['mean'].shape if 'mean' in norm_params else 'N/A',
-                norm_params['std'].shape if 'std' in norm_params else 'N/A'
+                list(norm_params.keys())
             ))
             return norm_params
         except Exception as e:
-            print("[TRAFFIC_NORM] Error loading normalization parameters: {}".format(e))
+            print("[NORM_PARAMS] Error loading normalization parameters: {}".format(e))
             return None
     else:
-        print("[TRAFFIC_NORM] No normalization parameters found at {}".format(norm_params_path))
-        return None
+        # Try old format for backward compatibility
+        old_norm_params_path = opj(model_dir, 'traffic_norm_params.pkl')
+        if os.path.exists(old_norm_params_path):
+            try:
+                with open(old_norm_params_path, 'rb') as f:
+                    old_norm_params = pickle.load(f)
+                print("[NORM_PARAMS] Loaded old format normalization parameters from {}".format(old_norm_params_path))
+                return old_norm_params
+            except Exception as e:
+                print("[NORM_PARAMS] Error loading old format parameters: {}".format(e))
+                return None
+        else:
+            print("[NORM_PARAMS] No normalization parameters found at {} or {}".format(norm_params_path, old_norm_params_path))
+            return None
 
 def apply_traffic_normalization(traffic_data, norm_params):
     """
     Apply normalization to traffic data using saved parameters
     
     Args:
-        traffic_data: Raw traffic data (14-dim array)
+        traffic_data: Raw traffic data (shape depends on model type)
         norm_params: Normalization parameters dict
     
     Returns:
         Normalized traffic data
     """
     if norm_params is None:
-        print("[TRAFFIC_NORM] Using fallback manual normalization")
-        # Fallback to manual normalization
-        bound_per_row = [50, 50, 5, 5, 5, 1, 5, 50, 50, 5, 5, 5, 1, 10]
-        normalized_data = traffic_data.copy()
-        for i in range(min(14, len(normalized_data))):
-            normalized_data[i] = normalized_data[i] / bound_per_row[i]
-        return normalized_data
+        print("[NORM_PARAMS] Using fallback manual normalization")
+        # Fallback to manual normalization for old format
+        if len(traffic_data.shape) == 1 and len(traffic_data) == 14:
+            # Old 14-dim format
+            bound_per_row = [50, 50, 5, 5, 5, 1, 5, 50, 50, 5, 5, 5, 1, 10]
+            normalized_data = traffic_data.copy()
+            for i in range(min(14, len(normalized_data))):
+                normalized_data[i] = normalized_data[i] / bound_per_row[i]
+            return normalized_data
+        else:
+            # New format - simple scaling
+            return traffic_data / 50.0
     
     if norm_params.get('method') == 'zscore':
-        # Apply z-score normalization
-        mean = norm_params['mean']
-        std = norm_params['std']
-        normalized_data = (traffic_data - mean) / std
-        return normalized_data
+        # Check if we have traffic-specific normalization
+        if 'traffic' in norm_params:
+            traffic_norm = norm_params['traffic']
+            mean = traffic_norm['mean']
+            std = traffic_norm['std']
+            normalized_data = (traffic_data - mean) / std
+            return normalized_data
+        else:
+            # Old format - direct mean/std
+            mean = norm_params['mean']
+            std = norm_params['std']
+            normalized_data = (traffic_data - mean) / std
+            return normalized_data
     else:
-        print("[TRAFFIC_NORM] Unknown normalization method: {}".format(norm_params.get('method')))
+        print("[NORM_PARAMS] Unknown normalization method: {}".format(norm_params.get('method')))
         return traffic_data
 
 # 3D line determined by two points (x1, y1, z1) and (x2, y2, z2)
@@ -191,16 +215,16 @@ def compute_command_vision_based(state, orig_img, prev_img, desiredVel, trained_
 def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desiredVel, trained_model, hidden_state, traffic_data=None, traffic_norm_params=None):
     """
     Enhanced version of compute_command_vision_based that supports traffic information
-    for LSTMNetVIT_Traffic and LSTMNetVIT_NoTraffic models
+    for LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic, LSTMNetVIT_GAT, and LSTMNetVIT_NoTraffic_2D models
     
     Args:
         state: Current quadrotor state
         orig_img: Original depth image
         prev_img: Previous depth image (unused but kept for compatibility)
         desiredVel: Desired velocity magnitude
-        trained_model: Neural network model (LSTMNetVIT_Traffic or LSTMNetVIT_NoTraffic)
+        trained_model: Neural network model (LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic, LSTMNetVIT_GAT, or LSTMNetVIT_NoTraffic_2D)
         hidden_state: LSTM hidden state
-        traffic_data: 14-dimensional traffic information array (optional)
+        traffic_data: Traffic information array (shape depends on model type)
         traffic_norm_params: Normalization parameters for traffic data (optional)
     """
     
@@ -225,18 +249,48 @@ def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desired
     img2 = orig_img.copy() # used for generating debugimg
     img = ToTensor()(np.array(img)).to(model_device)
 
-    # Handle traffic data with proper normalization
-    if traffic_data is not None:
-        # Apply normalization using saved parameters
-        normalized_traffic = apply_traffic_normalization(traffic_data, traffic_norm_params)
-        traffic_tensor = torch.tensor(normalized_traffic).view(1, -1).float().to(model_device)
+    # Handle traffic data based on model type
+    model_class_name = trained_model.__class__.__name__
+    
+    if model_class_name in ['LSTMNetVIT_GAT']:
+        # For GAT model, traffic_data should be (5, 5) array
+        if traffic_data is not None and traffic_data.shape == (5, 5):
+            # Apply normalization using saved parameters
+            if traffic_norm_params is not None and 'traffic' in traffic_norm_params:
+                traffic_norm = traffic_norm_params['traffic']
+                mean = traffic_norm['mean']
+                std = traffic_norm['std']
+                normalized_traffic = (traffic_data - mean) / std
+            else:
+                # Fallback normalization
+                normalized_traffic = traffic_data / 50.0  # Simple scaling
+            traffic_tensor = torch.tensor(normalized_traffic).view(1, 5, 5).float().to(model_device)
+        else:
+            # Create zero traffic data if not provided
+            traffic_tensor = torch.zeros(1, 5, 5).float().to(model_device)
+            
+        # For GAT model, we need robot_states as well
+        # Extract robot_states from state (this should be provided in the new format)
+        # For now, we'll construct a basic robot_states from available information
+        robot_states = np.array([0.0, 0.0, 0.0, desiredVel])  # [goal_x, goal_y, yaw, desired_vel]
+        robot_tensor = torch.tensor(robot_states).view(1, 4).float().to(model_device)
+        
+    elif model_class_name in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
+        # For old traffic models, traffic_data should be 14-dimensional
+        if traffic_data is not None:
+            # Apply normalization using saved parameters
+            normalized_traffic = apply_traffic_normalization(traffic_data, traffic_norm_params)
+            traffic_tensor = torch.tensor(normalized_traffic).view(1, -1).float().to(model_device)
+        else:
+            # Create zero traffic data if not provided
+            traffic_tensor = torch.zeros(1, 14).float().to(model_device)
     else:
-        # Create zero traffic data if not provided
-        traffic_tensor = torch.zeros(1, 14).float().to(model_device)
+        # For models without traffic
+        traffic_tensor = None
 
     # Initialize hidden state if needed
     if 'LSTMNet' in trained_model.__class__.__name__:
-        if trained_model.__class__.__name__ in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic']:
+        if trained_model.__class__.__name__ in ['LSTMNetVIT_Traffic', 'LSTMNetVIT_NoTraffic', 'LSTMNetVIT_GAT', 'LSTMNetVIT_NoTraffic_2D']:
             trained_model.lstm.num_layers = 3
             trained_model.lstm.hidden_size = 128
         elif trained_model.__class__.__name__ == 'LSTMNet':
@@ -257,30 +311,59 @@ def compute_command_vision_based_with_traffic(state, orig_img, prev_img, desired
                 torch.zeros(trained_model.lstm.num_layers, trained_model.lstm.hidden_size).float().to(model_device)
             )
     
-    # Prepare model inputs
-    model_inputs = [
-        img.view(1, 1, h, w), 
-        torch.tensor(desiredVel).view(1, 1).float().to(model_device), 
-        torch.tensor(q).view(1, -1).float().to(model_device)
-    ]
-    
-    # Add traffic data for traffic-enabled models
-    if hasattr(trained_model, 'use_traffic') and trained_model.use_traffic:
-        model_inputs.append(traffic_tensor)
-    
-    # Add hidden state if LSTM model
-    if hidden_state is not None:
-        model_inputs.append(hidden_state)
+    # Prepare model inputs based on model type
+    if model_class_name == 'LSTMNetVIT_GAT':
+        # GAT model expects: [images, robot_states, traffic_states, hidden_state]
+        model_inputs = [
+            img.view(1, 1, h, w),
+            robot_tensor,
+            traffic_tensor,
+            hidden_state
+        ]
+    elif model_class_name == 'LSTMNetVIT_NoTraffic_2D':
+        # NoTraffic_2D model expects: [images, robot_states, hidden_state]
+        robot_states = np.array([0.0, 0.0, 0.0, desiredVel])  # [goal_x, goal_y, yaw, desired_vel]
+        robot_tensor = torch.tensor(robot_states).view(1, 4).float().to(model_device)
+        model_inputs = [
+            img.view(1, 1, h, w),
+            robot_tensor,
+            hidden_state
+        ]
+    else:
+        # Old models: [images, desiredVel, quaternion, traffic_data, hidden_state]
+        model_inputs = [
+            img.view(1, 1, h, w), 
+            torch.tensor(desiredVel).view(1, 1).float().to(model_device), 
+            torch.tensor(q).view(1, -1).float().to(model_device)
+        ]
+        
+        # Add traffic data for traffic-enabled models
+        if hasattr(trained_model, 'use_traffic') and trained_model.use_traffic:
+            model_inputs.append(traffic_tensor)
+        
+        # Add hidden state if LSTM model
+        if hidden_state is not None:
+            model_inputs.append(hidden_state)
     
     # Forward pass
     with torch.no_grad():
         x, hidden_state = trained_model(model_inputs)
 
-    # Process output
+    # Process output based on model type
     x = x.cpu().squeeze().detach().numpy()
-    x[0] = np.clip(x[0], -1, 1)
-    x = x/np.linalg.norm(x)
-    command.velocity = x*desiredVel
+    
+    if model_class_name in ['LSTMNetVIT_GAT', 'LSTMNetVIT_NoTraffic_2D']:
+        # These models output 2D velocity commands (normalized by desired_vel during training)
+        # We need to denormalize by multiplying by desired_vel
+        x = x * desiredVel
+        # Ensure minimum forward velocity
+        x[0] = max(1.0, x[0])
+        command.velocity = [x[0], x[1], 0.0]  # 2D velocity in body frame
+    else:
+        # Old models: 3D velocity with normalization
+        x[0] = np.clip(x[0], -1, 1)
+        x = x/np.linalg.norm(x)
+        command.velocity = x*desiredVel
 
     # manual speedup
     min_xvel_cmd = 1.0

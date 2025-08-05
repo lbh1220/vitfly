@@ -11,7 +11,7 @@
 
 --seed=42
 --device=cuda
---lr=1e-4
+--lr=2e-4
 --N_eps=200
 --lr_warmup_epochs=5
 --lr_decay
@@ -23,3 +23,4 @@
 --gat_hidden_dim=128
 --gat_num_heads=4
 --gat_num_layers=2
+--ws_suffix=_gat_medium_128_8heads_2layers_lr2e-4

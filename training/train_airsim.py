@@ -1,10 +1,10 @@
 """
-@authors: Modified for AirSim dataset training
+@authors: Modified for AirSim dataset training with GAT models
 @organization: GRASP Lab, University of Pennsylvania
 @date: ...
 @license: ...
 
-@brief: This module contains the training routine for AirSim dataset with optional traffic information
+@brief: This module contains the training routine for AirSim dataset with GAT-based models
 """
 
 import os, sys
@@ -60,12 +60,13 @@ class TRAINER_AIRSIM:
         ###############
         traffic_suffix = "_with_traffic" if self.use_traffic else "_no_traffic"
         
-        # Add MLP parameters to workspace name if using traffic model
-        if self.use_traffic:
-            traffic_mlp_hidden = getattr(self.args, 'traffic_mlp_hidden', 64)
-            traffic_mlp_output = getattr(self.args, 'traffic_mlp_output', 32)
-            mlp_suffix = "_h{}_o{}".format(traffic_mlp_hidden, traffic_mlp_output)
-            traffic_suffix += mlp_suffix
+        # Add model parameters to workspace name
+        if hasattr(self.args, 'embed_dim'):
+            model_params_suffix = "_embed{}_gat{}".format(
+                getattr(self.args, 'embed_dim', 64),
+                getattr(self.args, 'gat_hidden_dim', 128)
+            )
+            traffic_suffix += model_params_suffix
         
         expname = datetime.now().strftime('d%m_%d_t%H_%M') + traffic_suffix
         self.workspace = opj(self.basedir, self.logdir, expname)
@@ -91,8 +92,8 @@ class TRAINER_AIRSIM:
         f = opj(self.workspace, 'log.txt')
         self.logfile = open(f, 'w')
 
-        self.mylogger(f'[TRAINER_AIRSIM init] Making workspace {self.workspace}')
-        self.mylogger(f'[TRAINER_AIRSIM init] Using traffic data: {self.use_traffic}')
+        self.mylogger('[TRAINER_AIRSIM init] Making workspace {}'.format(self.workspace))
+        self.mylogger('[TRAINER_AIRSIM init] Using traffic data: {}'.format(self.use_traffic))
 
         self.dataset_dir = opj(self.datadir, self.dataset_name)
 
@@ -112,28 +113,42 @@ class TRAINER_AIRSIM:
         self.dataloader(val_split=self.val_split, short=self.short, seed=self.seed, train_val_dirs=train_val_dirs)
 
         # TODO hardcoding num_training_steps to be the number of trajectories instead of number of images
-        self.num_training_steps = self.train_trajlength.shape[0]
-        self.num_val_steps = self.val_trajlength.shape[0]
+        self.num_training_steps = self.train_traj_lengths.shape[0]
+        self.num_val_steps = self.val_traj_lengths.shape[0]
         self.lr_warmup_iters = self.lr_warmup_epochs * self.num_training_steps
 
         ##################################
         ## Define network and optimizer ##
         ##################################
         self.mylogger('[SETUP] Establishing model and optimizer.')
-        if self.model_type == 'LSTMNetVIT_Traffic':
-            # Add traffic_mlp parameters from args if available, otherwise use defaults
-            traffic_mlp_hidden = getattr(self.args, 'traffic_mlp_hidden', 64)
-            traffic_mlp_output = getattr(self.args, 'traffic_mlp_output', 32)
-            self.model = model_library.LSTMNetVIT_Traffic(
-                use_traffic=self.use_traffic, 
-                traffic_mlp_hidden=traffic_mlp_hidden,
-                traffic_mlp_output=traffic_mlp_output
+        if self.model_type == 'LSTMNetVIT_GAT':
+            # GAT model parameters
+            embed_dim = getattr(self.args, 'embed_dim', 64)
+            gat_hidden_dim = getattr(self.args, 'gat_hidden_dim', 128)
+            gat_num_heads = getattr(self.args, 'gat_num_heads', 4)
+            gat_num_layers = getattr(self.args, 'gat_num_layers', 2)
+            
+            self.model = model_library.LSTMNetVIT_GAT(
+                robot_state_dim=4,
+                traffic_state_dim=5,
+                num_traffic_agents=5,
+                embed_dim=embed_dim,
+                gat_hidden_dim=gat_hidden_dim,
+                gat_num_heads=gat_num_heads,
+                gat_num_layers=gat_num_layers
             ).to(self.device).float()
-            self.mylogger('[SETUP] Using traffic MLP with hidden size: {}, output size: {}'.format(traffic_mlp_hidden, traffic_mlp_output))
-        elif self.model_type == 'LSTMNetVIT_NoTraffic':
-            self.model = model_library.LSTMNetVIT_NoTraffic().to(self.device).float()
+            
+            self.mylogger('[SETUP] Using GAT model with embed_dim: {}, gat_hidden_dim: {}, num_heads: {}, num_layers: {}'.format(
+                embed_dim, gat_hidden_dim, gat_num_heads, gat_num_layers))
+        elif self.model_type == 'LSTMNetVIT_NoTraffic_2D':
+            embed_dim = getattr(self.args, 'embed_dim', 64)
+            self.model = model_library.LSTMNetVIT_NoTraffic_2D(
+                robot_state_dim=4, 
+                embed_dim=embed_dim
+            ).to(self.device).float()
+            self.mylogger('[SETUP] Using no-traffic 2D model with embed_dim: {}'.format(embed_dim))
         else:
-            self.mylogger('[SETUP] Invalid model_type {}. Available: LSTMNetVIT_Traffic, LSTMNetVIT_NoTraffic'.format(self.model_type))
+            self.mylogger('[SETUP] Invalid model_type {}. Available: LSTMNetVIT_GAT, LSTMNetVIT_NoTraffic_2D'.format(self.model_type))
             exit()
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -153,13 +168,13 @@ class TRAINER_AIRSIM:
             self.num_eps_trained = int(checkpoint_path[-10:-4])
         except:
             self.num_eps_trained = 0
-            self.mylogger(f'[SETUP] Could not parse number of epochs trained from checkpoint path {checkpoint_path}, using 0')
-        self.mylogger(f'[SETUP] Loading checkpoint from {checkpoint_path}, already trained for {self.num_eps_trained} epochs')
+            self.mylogger('[SETUP] Could not parse number of epochs trained from checkpoint path {}, using 0'.format(checkpoint_path))
+        self.mylogger('[SETUP] Loading checkpoint from {}, already trained for {} epochs'.format(checkpoint_path, self.num_eps_trained))
         self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
 
     def dataloader(self, val_split, short=0, seed=None, train_val_dirs=None):
         self.mylogger('[DATALOADER] Loading from {}'.format(self.dataset_dir))
-        train_data, val_data, is_png, (self.train_dirs, self.val_dirs), traffic_norm_params = dataloader_airsim(
+        train_data, val_data, is_png, (self.train_dirs, self.val_dirs), norm_params = dataloader_airsim(
             opj(self.basedir, self.dataset_dir), 
             val_split=val_split, 
             short=short, 
@@ -168,37 +183,33 @@ class TRAINER_AIRSIM:
             use_traffic=self.use_traffic
         )
         
-        # Save traffic normalization parameters
-        if traffic_norm_params is not None:
+        # Save normalization parameters
+        if norm_params is not None:
             import pickle
-            norm_params_path = opj(self.workspace, 'traffic_norm_params.pkl')
+            norm_params_path = opj(self.workspace, 'norm_params.pkl')
             with open(norm_params_path, 'wb') as f:
-                pickle.dump(traffic_norm_params, f)
-            self.mylogger('[DATALOADER] Traffic normalization parameters saved to {}'.format(norm_params_path))
+                pickle.dump(norm_params, f)
+            self.mylogger('[DATALOADER] Normalization parameters saved to {}'.format(norm_params_path))
         
-        # Unpack data (including traffic data)
-        self.train_meta, self.train_ims, self.train_trajlength, self.train_desvel, self.train_currquat, self.train_currctbr, self.train_traffic = train_data
-        self.val_meta, self.val_ims, self.val_trajlength, self.val_desvel, self.val_currquat, self.val_currctbr, self.val_traffic = val_data
+        # Unpack data (new format)
+        self.train_robot_states, self.train_traffic_states, self.train_images, self.train_actions, self.train_traj_lengths = train_data
+        self.val_robot_states, self.val_traffic_states, self.val_images, self.val_actions, self.val_traj_lengths = val_data
         
-        self.mylogger('[DATALOADER] Dataloading done | train images {}, val images {}'.format(self.train_ims.shape, self.val_ims.shape))
+        self.mylogger('[DATALOADER] Dataloading done | train images {}, val images {}'.format(self.train_images.shape, self.val_images.shape))
+        self.mylogger('[DATALOADER] Robot states | train {}, val {}'.format(self.train_robot_states.shape, self.val_robot_states.shape))
         if self.use_traffic:
-            self.mylogger('[DATALOADER] Traffic data | train {}, val {}'.format(self.train_traffic.shape, self.val_traffic.shape))
+            self.mylogger('[DATALOADER] Traffic states | train {}, val {}'.format(self.train_traffic_states.shape, self.val_traffic_states.shape))
 
         # Preload data to device
-        data_to_preload = [self.train_meta, self.train_ims, self.train_desvel, self.train_currquat, self.train_currctbr, self.train_traffic]
-        self.train_meta, self.train_ims, self.train_desvel, self.train_currquat, self.train_currctbr, self.train_traffic = preload(data_to_preload, self.device)
+        data_to_preload = [self.train_robot_states, self.train_traffic_states, self.train_images, self.train_actions]
+        self.train_robot_states, self.train_traffic_states, self.train_images, self.train_actions = preload(data_to_preload, self.device)
         
-        data_to_preload = [self.val_meta, self.val_ims, self.val_desvel, self.val_currquat, self.val_currctbr, self.val_traffic]
-        self.val_meta, self.val_ims, self.val_desvel, self.val_currquat, self.val_currctbr, self.val_traffic = preload(data_to_preload, self.device)
+        data_to_preload = [self.val_robot_states, self.val_traffic_states, self.val_images, self.val_actions]
+        self.val_robot_states, self.val_traffic_states, self.val_images, self.val_actions = preload(data_to_preload, self.device)
         
-        self.mylogger(f'[DATALOADER] Preloading into device {self.device} done')
+        self.mylogger('[DATALOADER] Preloading into device {} done'.format(self.device))
 
-        assert self.train_ims.max() <= 1.0 and self.train_ims.min() >= 0.0, 'Images not normalized (values outside [0.0, 1.0])'
-        assert self.train_ims.max() > 0.50, "Images not normalized (values only below 0.10, possibly due to not normalizing images from 'old' dataset)"
-
-        # Extract velocity commands (compatible with original format)
-        self.train_velcmd = self.train_meta[:, range(13, 16) if is_png else range(12, 15)]
-        self.val_velcmd = self.val_meta[:, range(13, 16) if is_png else range(12, 15)]
+        assert self.train_images.max() <= 1.0 and self.train_images.min() >= 0.0, 'Images not normalized (values outside [0.0, 1.0])'
 
         # save train and val dirs in workspace for later use
         np.save(opj(self.workspace, 'train_val_dirs.npy'), np.array((self.train_dirs, self.val_dirs), dtype=object))
@@ -214,18 +225,18 @@ class TRAINER_AIRSIM:
         return lr
 
     def save_model(self, ep):
-        self.mylogger(f'[SAVE] Saving model at epoch {ep}')
+        self.mylogger('[SAVE] Saving model at epoch {}'.format(ep))
         path = self.workspace
-        torch.save(self.model.state_dict(), opj(path, f'model_{str(ep).zfill(6)}.pth'))
-        self.mylogger(f'[SAVE] Model saved at {path}')
+        torch.save(self.model.state_dict(), opj(path, 'model_{}.pth'.format(str(ep).zfill(6))))
+        self.mylogger('[SAVE] Model saved at {}'.format(path))
 
     def train(self):
-        self.mylogger(f'[TRAIN] Training for {self.N_eps} epochs')
+        self.mylogger('[TRAIN] Training for {} epochs'.format(self.N_eps))
         train_start = time.time()
 
         # starting indices of trajectories in dataset
-        self.train_traj_starts = np.cumsum(self.train_trajlength) - self.train_trajlength
-        train_traj_lengths = self.train_trajlength
+        self.train_traj_starts = np.cumsum(self.train_traj_lengths) - self.train_traj_lengths
+        train_traj_lengths = self.train_traj_lengths
 
         for ep in range(self.num_eps_trained, self.num_eps_trained + self.N_eps):
 
@@ -243,7 +254,7 @@ class TRAINER_AIRSIM:
             # shuffling order of training data trajectories here
             shuffled_traj_indices = np.random.permutation(len(self.train_traj_starts))
             train_traj_starts = self.train_traj_starts[shuffled_traj_indices]
-            train_traj_lengths = self.train_trajlength[shuffled_traj_indices]
+            train_traj_lengths = self.train_traj_lengths[shuffled_traj_indices]
 
             ### Training loop ###
             self.model.train()
@@ -251,25 +262,35 @@ class TRAINER_AIRSIM:
                 self.optimizer.zero_grad()
                 
                 # Extract trajectory data
-                traj_input = self.train_ims[train_traj_starts[it]+1 : train_traj_starts[it]+train_traj_lengths[it], :, :].unsqueeze(1)
-                desvel = self.train_desvel[train_traj_starts[it]+1 : train_traj_starts[it]+train_traj_lengths[it]].view(-1, 1)
-                currquat = self.train_currquat[train_traj_starts[it]+1 : train_traj_starts[it]+train_traj_lengths[it]]
+                traj_start = train_traj_starts[it]
+                traj_length = train_traj_lengths[it]
+                traj_end = traj_start + traj_length
+                
+                # Get trajectory data
+                traj_images = self.train_images[traj_start+1:traj_end].unsqueeze(1)  # (T-1, 1, H, W)
+                traj_robot_states = self.train_robot_states[traj_start+1:traj_end]    # (T-1, 4)
+                traj_actions = self.train_actions[traj_start+1:traj_end]             # (T-1, 2)
                 
                 # Prepare model inputs
-                model_inputs = [traj_input, desvel, currquat]
-                
-                # Add traffic data if using traffic model
-                if self.use_traffic:
-                    traffic_data = self.train_traffic[train_traj_starts[it]+1 : train_traj_starts[it]+train_traj_lengths[it]]
-                    model_inputs.append(traffic_data)
+                if self.model_type == 'LSTMNetVIT_GAT':
+                    traj_traffic_states = self.train_traffic_states[traj_start+1:traj_end]  # (T-1, 5, 5)
+                    model_inputs = [traj_images, traj_robot_states, traj_traffic_states]
+                else:
+                    model_inputs = [traj_images, traj_robot_states]
                 
                 # Forward pass
                 pred, _ = self.model(model_inputs)
                 
-                # Calculate loss
-                cmd = self.train_velcmd[train_traj_starts[it]+1 : train_traj_starts[it]+train_traj_lengths[it], :]
-                cmd_norm = cmd / desvel  # normalize each row by each desvel element
-                loss = F.mse_loss(cmd_norm, pred)
+                # Actions are already normalized by desired_vel during data loading
+                # Calculate loss (MSE between predicted and normalized target actions)
+                # loss = F.mse_loss(pred, traj_actions)
+                beta = 10
+                # 1. 分别计算前进和转向分量的loss
+                loss_forward = F.mse_loss(pred[:, 0], traj_actions[:, 0])
+                loss_angular = F.mse_loss(pred[:, 1], traj_actions[:, 1])
+                
+                # 2. 组合成最终loss
+                loss = loss_forward + beta * loss_angular
                 
                 ep_loss += loss
                 loss.backward()
@@ -285,18 +306,20 @@ class TRAINER_AIRSIM:
             ep_loss /= self.num_training_steps
             gradnorm /= self.num_training_steps
 
-            self.mylogger(f'[TRAIN] Completed epoch {ep + 1}/{self.num_eps_trained + self.N_eps}, ep_loss = {ep_loss:.6f}, time = {time.time() - train_start:.2f}s, time/epoch = {(time.time() - train_start)/(ep + 1 - self.num_eps_trained):.2f}s')
+            self.mylogger('[TRAIN] Completed epoch {}/{}, ep_loss = {:.6f}, time = {:.2f}s, time/epoch = {:.2f}s'.format(
+                ep + 1, self.num_eps_trained + self.N_eps, ep_loss, 
+                time.time() - train_start, (time.time() - train_start)/(ep + 1 - self.num_eps_trained)))
 
             self.writer.add_scalar('train/loss', ep_loss, ep)
             self.writer.add_scalar('train/gradnorm', gradnorm, ep)
             self.writer.add_scalar('train/lr', new_lr, self.total_its)
             self.writer.flush()
 
-        self.mylogger(f'[TRAIN] Training complete, total time = {time.time() - train_start:.2f}s')
+        self.mylogger('[TRAIN] Training complete, total time = {:.2f}s'.format(time.time() - train_start))
         self.save_model(ep)
 
     def validation(self, ep):
-        self.mylogger(f'[VAL] Validating for val set of size {self.val_ims.shape[0]} images')
+        self.mylogger('[VAL] Validating for val set of size {} images'.format(self.val_images.shape[0]))
 
         val_start = time.time()
 
@@ -304,37 +327,40 @@ class TRAINER_AIRSIM:
             ep_loss = 0
 
             # starting index of trajectories in dataset
-            val_traj_starts = np.cumsum(self.val_trajlength) - self.val_trajlength
+            val_traj_starts = np.cumsum(self.val_traj_lengths) - self.val_traj_lengths
 
             ### Validation loop ###
             self.model.eval()
 
             for it in range(self.num_val_steps):
                 # Extract trajectory data
-                traj_input = self.val_ims[val_traj_starts[it]+1 : val_traj_starts[it]+self.val_trajlength[it], :, :].unsqueeze(1)
-                desvel = self.val_desvel[val_traj_starts[it]+1 : val_traj_starts[it]+self.val_trajlength[it]].view(-1, 1)
-                currquat = self.val_currquat[val_traj_starts[it]+1 : val_traj_starts[it]+self.val_trajlength[it]]
+                traj_start = val_traj_starts[it]
+                traj_length = self.val_traj_lengths[it]
+                traj_end = traj_start + traj_length
+                
+                # Get trajectory data
+                traj_images = self.val_images[traj_start+1:traj_end].unsqueeze(1)  # (T-1, 1, H, W)
+                traj_robot_states = self.val_robot_states[traj_start+1:traj_end]    # (T-1, 4)
+                traj_actions = self.val_actions[traj_start+1:traj_end]             # (T-1, 2)
                 
                 # Prepare model inputs
-                model_inputs = [traj_input, desvel, currquat]
-                
-                # Add traffic data if using traffic model
-                if self.use_traffic:
-                    traffic_data = self.val_traffic[val_traj_starts[it]+1 : val_traj_starts[it]+self.val_trajlength[it]]
-                    model_inputs.append(traffic_data)
+                if self.model_type == 'LSTMNetVIT_GAT':
+                    traj_traffic_states = self.val_traffic_states[traj_start+1:traj_end]  # (T-1, 5, 5)
+                    model_inputs = [traj_images, traj_robot_states, traj_traffic_states]
+                else:
+                    model_inputs = [traj_images, traj_robot_states]
                 
                 # Forward pass
                 pred, _ = self.model(model_inputs)
                 
+                # Actions are already normalized by desired_vel during data loading
                 # Calculate loss
-                cmd = self.val_velcmd[val_traj_starts[it]+1 : val_traj_starts[it]+self.val_trajlength[it], :]
-                cmd_norm = cmd / desvel
-                loss = F.mse_loss(cmd_norm, pred)
+                loss = F.mse_loss(pred, traj_actions)
                 ep_loss += loss
 
             ep_loss /= self.num_val_steps
 
-            self.mylogger(f'[VAL] Completed validation, val_loss = {ep_loss:.6f}, time taken = {time.time() - val_start:.2f} s')
+            self.mylogger('[VAL] Completed validation, val_loss = {:.6f}, time taken = {:.2f} s'.format(ep_loss, time.time() - val_start))
             self.writer.add_scalar('val/loss', ep_loss, ep)
 
 def argparsing():
@@ -343,14 +369,14 @@ def argparsing():
 
     # general params
     parser.add_argument('--config', is_config_file=True, help='config file relative path')
-    parser.add_argument('--basedir', type=str, default=f'/home/{uname}/vitfly_ws/src/vitfly', help='path to repo')
+    parser.add_argument('--basedir', type=str, default='/home/{}/vitfly_ws/src/vitfly'.format(uname), help='path to repo')
     parser.add_argument('--logdir', type=str, default='training/logs_airsim', help='path to relative logging directory')
-    parser.add_argument('--datadir', type=str, default=f'/home/{uname}/vitfly_ws/data', help='path to relative dataset directory')
+    parser.add_argument('--datadir', type=str, default='/home/{}/vitfly_ws/data'.format(uname), help='path to relative dataset directory')
     
     # experiment-level and learner params
     parser.add_argument('--ws_suffix', type=str, default='', help='suffix if any to workspace name')
-    parser.add_argument('--model_type', type=str, default='LSTMNetVIT_Traffic', help='model type: LSTMNetVIT_Traffic or LSTMNetVIT_NoTraffic')
-    parser.add_argument('--use_traffic', action='store_true', default=False, help='whether to use traffic data (14-dim features)')
+    parser.add_argument('--model_type', type=str, default='LSTMNetVIT_GAT', help='model type: LSTMNetVIT_GAT or LSTMNetVIT_NoTraffic_2D')
+    parser.add_argument('--use_traffic', action='store_true', default=False, help='whether to use traffic data')
     parser.add_argument('--dataset', type=str, default='Drone1', help='name of dataset folder')
     parser.add_argument('--short', type=int, default=0, help='if nonzero, how many trajectory folders to load')
     parser.add_argument('--val_split', type=float, default=0.2, help='fraction of dataset to use for validation')
@@ -364,20 +390,25 @@ def argparsing():
     parser.add_argument('--lr_decay', action='store_true', default=False, help='whether to use lr_decay')
     parser.add_argument('--save_model_freq', type=int, default=25, help='frequency with which to save model checkpoints')
     parser.add_argument('--val_freq', type=int, default=10, help='frequency with which to evaluate on validation set')
-    parser.add_argument('--traffic_mlp_hidden', type=int, default=64, help='hidden size for the traffic MLP in LSTMNetVIT_Traffic')
-    parser.add_argument('--traffic_mlp_output', type=int, default=32, help='output size for the traffic MLP in LSTMNetVIT_Traffic')
+    
+    # GAT model parameters
+    parser.add_argument('--embed_dim', type=int, default=64, help='embedding dimension for robot and traffic states')
+    parser.add_argument('--gat_hidden_dim', type=int, default=128, help='hidden dimension for GAT layers')
+    parser.add_argument('--gat_num_heads', type=int, default=4, help='number of attention heads in GAT')
+    parser.add_argument('--gat_num_layers', type=int, default=2, help='number of GAT layers')
 
     args = parser.parse_args()
     
-    # Automatically set model type based on use_traffic flag
-    if args.use_traffic:
-        args.model_type = 'LSTMNetVIT_Traffic'
-    else:
-        args.model_type = 'LSTMNetVIT_NoTraffic'
+    # Automatically set model type and use_traffic based on model_type
+    if args.model_type == 'LSTMNetVIT_GAT':
+        args.use_traffic = True
+    elif args.model_type == 'LSTMNetVIT_NoTraffic_2D':
+        args.use_traffic = False
     
-    print(f'[CONFIGARGPARSE] Using model type: {args.model_type}')
+    print('[CONFIGARGPARSE] Using model type: {}'.format(args.model_type))
+    print('[CONFIGARGPARSE] Using traffic data: {}'.format(args.use_traffic))
     if hasattr(args, 'config') and args.config:
-        print(f'[CONFIGARGPARSE] Parsing args from config file {args.config}')
+        print('[CONFIGARGPARSE] Parsing args from config file {}'.format(args.config))
 
     return args
 
